@@ -220,7 +220,7 @@ def builtin_scenarios() -> dict[str, Scenario]:
         "low_confidence": _base(
             "low_confidence",
             "Alpha retrieve reports low confidence. The value is runtime-reported, not measured.",
-            [InjectedFault(route_name="alpha", waypoint_index=1, low_confidence=0.15)],
+            [InjectedFault(route_name="alpha", waypoint_index=1, low_confidence=0.15, ground_truth=False)],
             False,
             [],
         ),
@@ -231,7 +231,7 @@ def builtin_scenarios() -> dict[str, Scenario]:
                 "AERIS can do worse than CONTROL by diverting on an untrusted self-report."
             ),
             faults=[
-                InjectedFault(route_name="alpha", waypoint_index=1, low_confidence=0.1),
+                InjectedFault(route_name="alpha", waypoint_index=1, low_confidence=0.1, ground_truth=False),
                 InjectedFault(route_name="bravo", waypoint_index=1, tool_failure=True, persistent=True),
             ],
             injects_failure=False,
@@ -310,6 +310,7 @@ def builtin_scenarios() -> dict[str, Scenario]:
                     latency_ms=1500,
                     reported_confidence=0.62,
                     stale_data_s=30,
+                    ground_truth=False,
                 )
             ],
             False,

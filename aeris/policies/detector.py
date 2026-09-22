@@ -1,17 +1,20 @@
 """Deterministic HazardDetector.
 
-V0 uses thresholds only. An LLM must not be introduced here: detection has
-to be inspectable and replayable for the experiment to be falsifiable.
+Thresholds only, either static or relative to a contextual baseline. An
+LLM must not be introduced here: detection has to be inspectable and
+replayable for the experiment to be falsifiable. The detector never sees
+injected fault ids; fault attribution is a post-hoc evaluation step.
 """
 
 from __future__ import annotations
 
 from aeris.core.clock import Clock, SystemClock
-from aeris.core.enums import ControlAction, HazardSeverity, HazardType
+from aeris.core.enums import ControlAction, HazardSeverity, HazardType, RadarMode
 from aeris.core.ids import new_id
 from aeris.core.models import Flight, Hazard, TelemetryEvent
 from aeris.policies.catalog import spec_for
 from aeris.policies.thresholds import ThresholdPolicy
+from aeris.radar.baseline import BaselineKey, BaselineStore, ContextBaseline, robust_z
 
 _SEVERITY_LADDER = (
     HazardSeverity.INFO,
@@ -26,15 +29,18 @@ class HazardDetector:
         self,
         policy: ThresholdPolicy | None = None,
         clock: Clock | None = None,
+        baselines: BaselineStore | None = None,
     ) -> None:
         self.policy = policy or ThresholdPolicy()
         self._clock = clock or SystemClock()
+        self.baselines = baselines
         self._occurrences: dict[tuple[str, HazardType], int] = {}
 
     def detect(self, flight: Flight, telemetry: TelemetryEvent) -> list[Hazard]:
         metrics = telemetry.metrics
         now = self._clock.now()
         hazards: list[Hazard] = []
+        baseline = self._baseline_for(flight, telemetry)
 
         if metrics.timed_out or metrics.step_latency_ms >= self.policy.timeout_risk_ms:
             hazards.append(
@@ -47,6 +53,10 @@ class HazardDetector:
                     {"step_latency_ms": metrics.step_latency_ms, "timed_out": metrics.timed_out},
                 )
             )
+        elif baseline is not None:
+            latency_hazard = self._contextual_latency(flight, metrics.step_latency_ms, baseline, now)
+            if latency_hazard is not None:
+                hazards.append(latency_hazard)
         elif metrics.step_latency_ms >= self.policy.high_latency_ms:
             severity = (
                 HazardSeverity.WARNING
@@ -65,7 +75,34 @@ class HazardDetector:
                     severity,
                     action,
                     now,
-                    {"step_latency_ms": metrics.step_latency_ms},
+                    {
+                        "step_latency_ms": metrics.step_latency_ms,
+                        "mode": RadarMode.STATIC_THRESHOLD.value,
+                        "threshold_ms": self.policy.high_latency_ms,
+                    },
+                )
+            )
+
+        if (
+            baseline is not None
+            and baseline.token_max is not None
+            and metrics.step_token_usage is not None
+            and metrics.step_token_usage > baseline.token_max * self.policy.token_range_tolerance
+        ):
+            hazards.append(
+                self._hazard(
+                    flight,
+                    HazardType.BUDGET_RISK,
+                    HazardSeverity.CAUTION,
+                    ControlAction.CONTINUE,
+                    now,
+                    {
+                        "mode": RadarMode.CONTEXTUAL_THRESHOLD.value,
+                        "observed_tokens": metrics.step_token_usage,
+                        "expected_token_range": [baseline.token_min, baseline.token_max],
+                        "tolerance": self.policy.token_range_tolerance,
+                        "decision": "token usage above calibrated range",
+                    },
                 )
             )
 
@@ -188,7 +225,67 @@ class HazardDetector:
                 )
             )
 
+        for hazard in hazards:
+            hazard.route_id = telemetry.route_id
+            hazard.waypoint_id = telemetry.waypoint_id
         return hazards
+
+    def _baseline_for(self, flight: Flight, telemetry: TelemetryEvent) -> ContextBaseline | None:
+        if self.policy.radar_mode is not RadarMode.CONTEXTUAL_THRESHOLD or self.baselines is None:
+            return None
+        try:
+            route = flight.current_route()
+        except Exception:
+            return None
+        waypoint = next(
+            (item for item in route.waypoints if item.waypoint_id == telemetry.waypoint_id),
+            None,
+        )
+        key = BaselineKey(
+            runtime=flight.agent.runtime_kind,
+            route=route.name,
+            waypoint=waypoint.name if waypoint else "*",
+            tool=(waypoint.tool if waypoint and waypoint.tool else "*"),
+        )
+        return self.baselines.lookup(key)
+
+    def _contextual_latency(
+        self,
+        flight: Flight,
+        observed: float,
+        baseline: ContextBaseline,
+        now,
+    ) -> Hazard | None:
+        threshold = baseline.latency_tolerance or self.policy.robust_z_threshold
+        z = robust_z(
+            observed,
+            baseline.latency_median_ms,
+            baseline.latency_mad_ms,
+            min_spread=self.policy.min_mad_ms,
+        )
+        if z < threshold:
+            return None
+        severity = HazardSeverity.WARNING if z >= threshold * 2 else HazardSeverity.CAUTION
+        action = ControlAction.REROUTE if severity is HazardSeverity.WARNING else ControlAction.HOLD
+        return self._hazard(
+            flight,
+            HazardType.HIGH_LATENCY,
+            severity,
+            action,
+            now,
+            {
+                "mode": RadarMode.CONTEXTUAL_THRESHOLD.value,
+                "step_latency_ms": observed,
+                "observed_latency_ms": observed,
+                "baseline_key": baseline.key.text(),
+                "baseline_n": baseline.n,
+                "route_median_ms": baseline.latency_median_ms,
+                "route_mad_ms": baseline.latency_mad_ms,
+                "robust_z": round(z, 2),
+                "threshold": threshold,
+                "decision": f"robust_z {z:.1f} >= {threshold} -> HIGH_LATENCY",
+            },
+        )
 
     def reset_route_local(self, flight_id: str) -> None:
         """Drop route-local occurrence counts after a diversion."""

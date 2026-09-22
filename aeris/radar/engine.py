@@ -95,6 +95,8 @@ class RadarEngine:
             step_success=observation.success and not observation.tool_error and not observation.timeout,
             timed_out=observation.timeout,
             tool_error=observation.tool_error,
+            step_token_usage=observation.token_usage,
+            step_cost=observation.model_cost + observation.tool_cost,
         )
         provenance = {
             "step_latency_ms": SignalProvenance.MEASURED,
@@ -111,6 +113,8 @@ class RadarEngine:
             "retry_count": SignalProvenance.DERIVED,
             "route_changes": SignalProvenance.DERIVED,
             "step_success": SignalProvenance.DERIVED,
+            "step_token_usage": SignalProvenance.RUNTIME_REPORTED,
+            "step_cost": SignalProvenance.DERIVED,
         }
         return TelemetryEvent(
             event_id=new_id("tel"),
