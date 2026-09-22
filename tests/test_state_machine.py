@@ -1,8 +1,8 @@
+from aeris.core.clock import FakeClock
 from aeris.core.enums import ExecutionState
 from aeris.core.ids import new_id
 from aeris.core.models import Agent, Flight
 from aeris.core.state_machine import InvalidTransition, StateMachine
-from aeris.core.clock import FakeClock
 
 
 def _flight(clock: FakeClock) -> Flight:
@@ -60,3 +60,43 @@ def test_same_state_is_a_noop():
     sm = StateMachine(clock)
     flight = _flight(clock)
     assert sm.transition(flight, ExecutionState.CREATED, "noop") is None
+
+
+def test_every_legal_transition_succeeds_and_every_illegal_one_fails():
+    from aeris.core.state_machine import ALLOWED
+
+    paths = {
+        ExecutionState.CREATED: [],
+        ExecutionState.PLANNED: [ExecutionState.PLANNED],
+        ExecutionState.RUNNING: [ExecutionState.PLANNED, ExecutionState.RUNNING],
+        ExecutionState.DEGRADED: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.DEGRADED],
+        ExecutionState.HOLDING: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.HOLDING],
+        ExecutionState.REROUTING: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.REROUTING],
+        ExecutionState.WAITING_HUMAN: [
+            ExecutionState.PLANNED,
+            ExecutionState.RUNNING,
+            ExecutionState.WAITING_HUMAN,
+        ],
+        ExecutionState.COMPLETED: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.COMPLETED],
+        ExecutionState.FAILED: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.FAILED],
+        ExecutionState.ABORTED: [ExecutionState.PLANNED, ExecutionState.RUNNING, ExecutionState.ABORTED],
+    }
+    clock = FakeClock()
+    sm = StateMachine(clock)
+    for source, steps in paths.items():
+        for target in ExecutionState:
+            flight = _flight(clock)
+            for step in steps:
+                sm.transition(flight, step, "setup")
+            assert flight.state is source
+            if target is source:
+                assert sm.transition(flight, target, "same") is None
+            elif target in ALLOWED[source]:
+                sm.transition(flight, target, "legal")
+                assert flight.state is target
+            else:
+                try:
+                    sm.transition(flight, target, "illegal")
+                    raise AssertionError(f"{source} -> {target} must fail")
+                except InvalidTransition:
+                    assert flight.state is source

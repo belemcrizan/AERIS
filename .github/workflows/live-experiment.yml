@@ -1,0 +1,33 @@
+name: live-experiment
+
+# Manual only: the live campaign calls a paid model API.
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "paired trials per scenario"
+        default: "30"
+      model:
+        description: "OpenAI-compatible model name"
+        default: "gpt-4o-mini"
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live-experiment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Run live campaign
+        env:
+          AERIS_LIVE: "1"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AERIS_LIVE_MODEL: ${{ inputs.model }}
+        run: python examples/live_support_experiment.py --live --seeds ${{ inputs.seeds }} --out results/live
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-results
+          path: results/live

@@ -60,9 +60,14 @@ def test_human_reroute_and_abort(tmp_path: Path):
         assert body["state"] == "WAITING_HUMAN"
         flight_id = body["flight_id"]
         bravo = next(route for route in body["plan"]["routes"] if route["name"] == "bravo")
-        resumed = client.post(
+        missing_role = client.post(
             f"/flights/{flight_id}/control/reroute",
             json={"reason": "divert", "route_id": bravo["route_id"], "operator": "atc"},
+        )
+        assert missing_role.status_code == 422
+        resumed = client.post(
+            f"/flights/{flight_id}/control/reroute",
+            json={"reason": "divert", "route_id": bravo["route_id"], "operator": "atc", "role": "CONTROLLER"},
         )
         assert resumed.status_code == 200
         assert resumed.json()["state"] == "COMPLETED"
@@ -71,13 +76,13 @@ def test_human_reroute_and_abort(tmp_path: Path):
         abort_id = blocked.json()["flight_id"]
         aborted = client.post(
             f"/flights/{abort_id}/control/abort",
-            json={"reason": "stop"},
+            json={"reason": "stop", "role": "ADMIN"},
         )
         assert aborted.json()["state"] == "ABORTED"
 
         done = client.post("/flights", json={"scenario_id": "happy_path"})
         conflict = client.post(
             f"/flights/{done.json()['flight_id']}/control/continue",
-            json={"reason": "too late"},
+            json={"reason": "too late", "role": "CONTROLLER"},
         )
         assert conflict.status_code == 409

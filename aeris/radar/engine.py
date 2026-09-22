@@ -5,9 +5,10 @@ No routing, no policy, no control decisions live here.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from aeris.core.clock import Clock, SystemClock
+from aeris.core.enums import SignalProvenance
 from aeris.core.ids import new_id
 from aeris.core.models import Flight, StepObservation, TelemetryEvent, TelemetryMetrics
 
@@ -94,7 +95,27 @@ class RadarEngine:
             step_success=observation.success and not observation.tool_error and not observation.timeout,
             timed_out=observation.timeout,
             tool_error=observation.tool_error,
+            step_token_usage=observation.token_usage,
+            step_cost=observation.model_cost + observation.tool_cost,
         )
+        provenance = {
+            "step_latency_ms": SignalProvenance.MEASURED,
+            "latency_ms": SignalProvenance.MEASURED,
+            "execution_time_ms": SignalProvenance.MEASURED,
+            "tool_error": SignalProvenance.RUNTIME_REPORTED,
+            "timed_out": SignalProvenance.RUNTIME_REPORTED,
+            "confidence": SignalProvenance.RUNTIME_REPORTED,
+            "progress": SignalProvenance.RUNTIME_REPORTED,
+            "token_usage": SignalProvenance.RUNTIME_REPORTED,
+            "data_freshness_s": SignalProvenance.TOOL_REPORTED,
+            "repeated_action_count": SignalProvenance.DERIVED,
+            "steps_without_progress": SignalProvenance.DERIVED,
+            "retry_count": SignalProvenance.DERIVED,
+            "route_changes": SignalProvenance.DERIVED,
+            "step_success": SignalProvenance.DERIVED,
+            "step_token_usage": SignalProvenance.RUNTIME_REPORTED,
+            "step_cost": SignalProvenance.DERIVED,
+        }
         return TelemetryEvent(
             event_id=new_id("tel"),
             flight_id=flight.flight_id,
@@ -103,4 +124,5 @@ class RadarEngine:
             waypoint_id=observation.waypoint_id,
             timestamp=self._clock.now(),
             metrics=metrics,
+            provenance=provenance,
         )

@@ -2,27 +2,64 @@
 
 ## V0 — this repository
 
-Local-first ATC loop, simulator, SQLite recorder, FastAPI, pytest,
-CONTROL vs AERIS harness. No LLM required.
+Local-first ATC loop, simulator, one local Python agent adapter,
+SQLite recorder with a hash chain, FastAPI, pytest, CONTROL vs AERIS
+harness. No LLM API key. No network in tests.
 
-Milestone checklist:
+Done in this tree:
 
-1. Domain models and state machine
-2. Radar, hazards, planner, controller
-3. Flight director and recorder
-4. Simulator scenarios including a falsifying `all_routes_fail`
-5. HTTP + HITL
-6. Evaluation harness
-7. Docs and tests that run offline
+- side-effect classes, idempotency keys, compensation, unsafe retry/reroute rejection
+- detector catalog and precision / recall / MTTD / MTTI / MTTR
+- operator roles and human requests with context
+- tamper-evident recorder
+- `SimplePythonAgentRuntime` and `examples/first_flight.py`
+- GitHub Actions running `ruff check` and `pytest`
 
-## V1 — real runtimes
+## V1 — a runtime that can actually fail in the wild
 
-- Adapters for at least one real framework (`AgentRuntime` only)
-- Trace attributes from live token usage and tool errors
-- Policy files loaded from disk, not just defaults
-- Richer human console (still optional; API remains the source of truth)
+Done in this tree:
 
-## V2 — distribution without rewriting the domain
+- explicit operator role on every control path; no implicit ADMIN
+- per-flight lock plus optimistic `control_version`
+- cancellation end to end, with request and outcome recorded separately
+- fault instances, deterministic fault-to-hazard matching, event-level
+  precision/recall, MTTD/MTTI/MTTR from matched events
+- intervention utility from paired outcomes
+- contextual radar (median/MAD baselines) with STATIC/CONTEXTUAL modes
+- failure-domain diversity, route failure history, shared-dependency penalty
+- optional signed checkpoints, tail-truncation detection
+- one opt-in OpenAI-compatible adapter behind `AgentRuntime` (stdlib only)
+- enterprise support case: tools, sandbox ledger, fault proxy, evaluator,
+  18-scenario campaign including negative controls
+- paired experiment runner with ablations, calibration/validation/test
+  seed split, configuration hashes, cost accounting, bootstrap CIs gated
+  on stochasticity and N, JSONL/JSON/CSV/Markdown reports
+- small HTML console over a domain view
+- pre-registered protocol
+
+Not done:
+
+- **the live experiment has not been run**
+- contextual token range is too narrow as calibrated (see BENCHMARK.md)
+- CONTROL is a single weak baseline; no retry-with-backoff wrapper arm
+- policy is Python defaults, not files loaded from disk
+- compensation is in-process and synchronous
+- authorization is a role enum, not an identity system
+- checkpoints have no external anchor
+
+## V1.1 — next milestone
+
+1. Run the pre-registered live campaign (N=30) on one small model and
+   publish the report as-is, including unfavourable results.
+2. Add a stronger baseline arm: the same agent with a retry-with-backoff
+   wrapper and no AERIS. Without it, "AERIS beats CONTROL" partly means
+   "any supervisor beats none".
+3. Fix the token baseline calibration by learning from retried and
+   rerouted healthy flights too, as a new protocol version, then re-run.
+4. Repeat on a second model family to see whether the effect survives a
+   change of model.
+
+## V2 — distribution, only if a measured gap needs it
 
 - Recorder implementation on Postgres or an event log
 - Optional NATS/Kafka transport for telemetry
@@ -32,7 +69,7 @@ The Pydantic models in `aeris.core` should not change shape for this.
 
 ## V3 — research that could fail in public
 
-- Pre-registered evaluation on a frozen scenario mix
+- Pre-registered evaluation on a frozen scenario mix (protocol exists; live run pending)
 - Comparison against other intervention policies
 - Only then: learned ranking, graph search, multi-agent traffic
 

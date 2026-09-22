@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Compile
+        run: python -m compileall -q aeris
+      - name: Test
+        run: python -m pytest -q
+      - name: Import examples
+        run: python -c "import aeris, examples.run_experiment, examples.run_latency_reroute, examples.first_flight, examples.live_support_experiment"
+      - name: Offline support campaign (scripted model, no key)
+        run: python examples/live_support_experiment.py --out results/ci --scenarios healthy status_timeout credit_lost_response_unkeyed false_confidence_bad_fallback
