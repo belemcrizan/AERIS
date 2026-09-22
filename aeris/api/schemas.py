@@ -1,4 +1,4 @@
-"""HTTP schemas for the V0 control-plane API."""
+"""HTTP schemas for the control-plane API."""
 
 from __future__ import annotations
 
@@ -17,10 +17,20 @@ class FlightCreate(BaseModel):
     scenario_id: str = "happy_path"
     mode: InterventionMode = InterventionMode.AERIS
     human_on_critical: bool | None = None
+    background: bool = Field(
+        default=False,
+        description="Return immediately and fly in the background so cancel/console can observe it",
+    )
 
 
 class HumanControlBody(BaseModel):
+    """A control call must say who is acting. There is no default role."""
+
     operator: str = "human"
-    role: OperatorRole = OperatorRole.CONTROLLER
+    role: OperatorRole
     reason: str = "human controller action"
     route_id: str | None = Field(default=None, description="Required for explicit reroute")
+    expected_version: int | None = Field(
+        default=None,
+        description="control_version the caller saw; a stale value is rejected with 409",
+    )

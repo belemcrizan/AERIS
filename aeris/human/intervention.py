@@ -14,10 +14,11 @@ from aeris.human.authorization import allowed_actions
 
 class HumanActionRequest(BaseModel):
     operator: str = "human"
-    role: OperatorRole = OperatorRole.CONTROLLER
+    role: OperatorRole
     reason: str = "human controller action"
     route_id: str | None = None
     action: ControlAction | None = None
+    expected_version: int | None = None
 
 
 class HumanInterventionRequest(BaseModel):
@@ -36,6 +37,7 @@ class HumanInterventionRequest(BaseModel):
     allowed_actions: list[ControlAction] = Field(default_factory=list)
     timestamp: datetime
     reason: str
+    control_version: int = 0
 
 
 def side_effect_state(flight: Flight) -> dict[str, Any]:
