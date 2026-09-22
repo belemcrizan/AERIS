@@ -1,0 +1,14 @@
+# Optional local container run. Not required for tests or the experiment.
+services:
+  aeris:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      AERIS_DB_PATH: /app/data/aeris.db
+      AERIS_OTEL_ENABLED: "false"
+    volumes:
+      - aeris-data:/app/data
+
+volumes:
+  aeris-data:

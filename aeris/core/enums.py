@@ -1,0 +1,67 @@
+"""Closed vocabularies for V0. New types should be added here, not as free strings."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class ExecutionState(StrEnum):
+    CREATED = "CREATED"
+    PLANNED = "PLANNED"
+    RUNNING = "RUNNING"
+    DEGRADED = "DEGRADED"
+    HOLDING = "HOLDING"
+    REROUTING = "REROUTING"
+    WAITING_HUMAN = "WAITING_HUMAN"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ABORTED = "ABORTED"
+
+
+class HazardType(StrEnum):
+    HIGH_LATENCY = "HIGH_LATENCY"
+    TIMEOUT_RISK = "TIMEOUT_RISK"
+    TOOL_FAILURE = "TOOL_FAILURE"
+    REPEATED_ACTION = "REPEATED_ACTION"
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+    STALE_DATA = "STALE_DATA"
+    NO_PROGRESS = "NO_PROGRESS"
+    ROUTE_FAILURE = "ROUTE_FAILURE"
+    BUDGET_RISK = "BUDGET_RISK"
+
+
+class HazardSeverity(StrEnum):
+    INFO = "INFO"
+    CAUTION = "CAUTION"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+class ControlAction(StrEnum):
+    CONTINUE = "CONTINUE"
+    RETRY = "RETRY"
+    HOLD = "HOLD"
+    REROUTE = "REROUTE"
+    ESCALATE_HUMAN = "ESCALATE_HUMAN"
+    ABORT = "ABORT"
+
+
+class EventType(StrEnum):
+    MISSION_CREATED = "MISSION_CREATED"
+    FLIGHT_CREATED = "FLIGHT_CREATED"
+    STATE_TRANSITION = "STATE_TRANSITION"
+    PLAN_CREATED = "PLAN_CREATED"
+    WAYPOINT_STARTED = "WAYPOINT_STARTED"
+    WAYPOINT_COMPLETED = "WAYPOINT_COMPLETED"
+    TELEMETRY = "TELEMETRY"
+    HAZARD = "HAZARD"
+    DECISION = "DECISION"
+    HUMAN_INTERVENTION = "HUMAN_INTERVENTION"
+    FLIGHT_COMPLETED = "FLIGHT_COMPLETED"
+
+
+class InterventionMode(StrEnum):
+    """Experiment arms. CONTROL records hazards but never intervenes."""
+
+    CONTROL = "CONTROL"
+    AERIS = "AERIS"
