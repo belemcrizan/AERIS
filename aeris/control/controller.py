@@ -100,6 +100,35 @@ class ATCController:
         worst = self._worst(hazards)
         asserted = self._dominant_action(hazards)
         alternative = alternative or self.planner.next_route(flight, hazards)
+        blocked_alternative: ScoredRoute | None = None
+        if (
+            alternative is not None
+            and alternative.shared_failed_dependencies
+            and self.policy.avoid_shared_failure_domain
+        ):
+            blocked_alternative = alternative
+            alternative = None
+        if blocked_alternative is not None and asserted == ControlAction.REROUTE:
+            reason = (
+                f"no independent diversion: {blocked_alternative.route.name} shares failed "
+                f"dependency {blocked_alternative.shared_failed_dependencies}"
+            )
+            evidence = self._evidence(hazards, None)
+            evidence["blocked_alternative"] = {
+                "route_id": blocked_alternative.route.route_id,
+                "shared_failed_dependencies": blocked_alternative.shared_failed_dependencies,
+                "terms": blocked_alternative.terms,
+            }
+            action = ControlAction.ESCALATE_HUMAN if self.policy.human_on_critical else ControlAction.ABORT
+            return make_decision(
+                flight.flight_id,
+                action,
+                reason,
+                now,
+                previous_route=current_route,
+                new_route=current_route,
+                evidence={**evidence, "failure_reason": FailureReason.ROUTE_EXHAUSTION.value},
+            )
 
         if flight.route_changes >= self.policy.max_route_changes and asserted == ControlAction.REROUTE:
             asserted = ControlAction.ESCALATE_HUMAN if self.policy.human_on_critical else ControlAction.ABORT
@@ -256,13 +285,18 @@ class ATCController:
         if alternative is not None:
             payload["selected_route"] = {
                 "route_id": alternative.route.route_id,
+                "name": alternative.route.name,
                 "score": alternative.score,
+                "terms": alternative.terms,
+                "diversity": alternative.diversity,
+                "shared_failed_dependencies": alternative.shared_failed_dependencies,
                 "reasons": alternative.reasons,
             }
         return payload
 
     def _finalize(self, flight: Flight, decision: ControlDecision) -> ControlDecision:
-        decision = self._guard_side_effects(flight, decision)
+        if self.policy.side_effect_gate:
+            decision = self._guard_side_effects(flight, decision)
         return self._guard_budget(flight, decision)
 
     def _guard_side_effects(self, flight: Flight, decision: ControlDecision) -> ControlDecision:

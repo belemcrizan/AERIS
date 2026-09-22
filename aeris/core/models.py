@@ -12,9 +12,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aeris.core.enums import (
+    CancelOutcome,
+    CancelStatus,
     ControlAction,
     ExecutionState,
     FailureReason,
+    FaultType,
     HazardScope,
     HazardSeverity,
     HazardType,
@@ -48,6 +51,30 @@ class Waypoint(BaseModel):
     idempotency_key: str | None = None
     supports_idempotency: bool = False
     compensation_name: str | None = None
+    tool: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
+
+    def dependency_ids(self) -> set[str]:
+        ids = set(self.depends_on)
+        if self.tool:
+            ids.add(f"tool:{self.tool}")
+        return ids
+
+
+class RouteDependencies(BaseModel):
+    """What a route shares with other routes when something breaks.
+
+    Two routes that name the same provider, model, data source, or service
+    are not independent diversions, however different their names are.
+    """
+
+    model_provider: str | None = None
+    model_family: str | None = None
+    tool_provider: str | None = None
+    data_source: str | None = None
+    region: str | None = None
+    network_dependency: str | None = None
+    shared_service_ids: list[str] = Field(default_factory=list)
 
 
 class Route(BaseModel):
@@ -60,6 +87,23 @@ class Route(BaseModel):
     estimated_cost: float = 1.0
     side_effect_risk: float = 0.0
     is_human: bool = False
+    dependencies: RouteDependencies | None = None
+
+    def dependency_ids(self) -> set[str]:
+        ids: set[str] = set()
+        for waypoint in self.waypoints:
+            ids |= waypoint.dependency_ids()
+        deps = self.dependencies
+        if deps is not None:
+            ids |= set(deps.shared_service_ids)
+            for label, value in (
+                ("provider", deps.model_provider),
+                ("tool_provider", deps.tool_provider),
+                ("data", deps.data_source),
+            ):
+                if value:
+                    ids.add(f"{label}:{value}")
+        return ids
 
 
 class FlightPlan(BaseModel):
@@ -96,6 +140,8 @@ class TelemetryMetrics(BaseModel):
     step_success: bool = True
     timed_out: bool = False
     tool_error: bool = False
+    step_token_usage: int | None = None
+    step_cost: float = 0.0
 
 
 class TelemetryEvent(BaseModel):
@@ -137,6 +183,42 @@ class StepObservation(BaseModel):
     fault_injected: bool = False
     fault_kind: str | None = None
     cancelled: bool = False
+    faults: list[FaultInstance] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: int = 0
+    model_cost: float = 0.0
+    tool_cost: float = 0.0
+    tool: str | None = None
+    dependency_ids: list[str] = Field(
+        default_factory=list,
+        description="Dependencies of the tool call that ended this step; empty means use the waypoint's",
+    )
+
+
+class FaultInstance(BaseModel):
+    """One injected fault on one flight.
+
+    ``schedule_id`` is shared by CONTROL and AERIS so paired trials can be
+    compared. ``fault_id`` is unique per flight. ``ground_truth`` is false for
+    faults that inject a misleading signal without a real degradation
+    (for example a false low-confidence report); a hazard that matches such a
+    fault is a false positive.
+    """
+
+    fault_id: str
+    schedule_id: str
+    flight_id: str
+    route_id: str | None = None
+    waypoint_id: str | None = None
+    fault_type: FaultType
+    onset_timestamp: datetime | None = None
+    recovery_timestamp: datetime | None = None
+    injected: bool = True
+    ground_truth: bool = True
+    severity: str = "WARNING"
+    target: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommittedEffect(BaseModel):
@@ -161,12 +243,33 @@ class Hazard(BaseModel):
     scope: HazardScope = HazardScope.ROUTE_LOCAL
     auto_clear: bool = True
     occurrence: int = 1
+    route_id: str | None = None
+    waypoint_id: str | None = None
+    source_fault_id: str | None = Field(
+        default=None,
+        description="Set only by post-hoc evaluation matching. The detector never sees fault ids.",
+    )
 
 
 class ScoredRoute(BaseModel):
     route: Route
     score: float
     reasons: list[str]
+    terms: dict[str, float] = Field(default_factory=dict)
+    diversity: float | None = None
+    shared_failed_dependencies: list[str] = Field(default_factory=list)
+
+
+class RouteFailureRecord(BaseModel):
+    """Why a route failed, not just that it did."""
+
+    route_id: str
+    hazard_type: HazardType
+    tool: str | None = None
+    provider: str | None = None
+    dependency_ids: list[str] = Field(default_factory=list)
+    occurrence_count: int = 1
+    most_recent: datetime
 
 
 class ControlDecision(BaseModel):
@@ -188,7 +291,7 @@ class HumanIntervention(BaseModel):
     flight_id: str
     action: ControlAction
     operator: str = "human"
-    role: OperatorRole = OperatorRole.ADMIN
+    role: OperatorRole
     reason: str
     route_id: str | None = None
     timestamp: datetime
@@ -215,6 +318,14 @@ class FlightResult(BaseModel):
     side_effect_incidents: int = 0
     compensations: int = 0
     compensation_failures: int = 0
+    cancel_outcome: CancelOutcome | None = None
+    cancel_status: CancelStatus | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: int = 0
+    model_cost: float = 0.0
+    tool_cost: float = 0.0
+    execution_time_ms: float = 0.0
 
 
 class Flight(BaseModel):
@@ -247,6 +358,21 @@ class Flight(BaseModel):
     runtime_supports_idempotency: bool = False
     runtime_can_retry: bool = True
     runtime_can_cancel: bool = False
+    control_version: int = 0
+    route_history: list[RouteFailureRecord] = Field(default_factory=list)
+    cancel_outcome: CancelOutcome | None = None
+    cancel_status: CancelStatus | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: int = 0
+    model_cost: float = 0.0
+    tool_cost: float = 0.0
+
+    def failed_dependency_ids(self) -> set[str]:
+        ids: set[str] = set()
+        for record in self.route_history:
+            ids |= set(record.dependency_ids)
+        return ids
 
     def current_route(self) -> Route:
         if self.plan is None or self.current_route_id is None:
@@ -292,3 +418,6 @@ def make_decision(
         follow_up=follow_up,
         blocked_reason=blocked_reason,
     )
+
+
+StepObservation.model_rebuild()
