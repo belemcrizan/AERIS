@@ -34,9 +34,36 @@ A **hazard** is a threshold crossing with evidence. Severity is one of
 the hazard; ATC may override them using policy (for example: no
 alternative route left, so ABORT instead of REROUTE).
 
-V0 hazard types: `HIGH_LATENCY`, `TIMEOUT_RISK`, `TOOL_FAILURE`,
-`REPEATED_ACTION`, `LOW_CONFIDENCE`, `STALE_DATA`, `NO_PROGRESS`,
-`ROUTE_FAILURE`, `BUDGET_RISK`.
+V0 hazard types:
+
+| Type | Signal | Condition | Scope |
+| --- | --- | --- | --- |
+| `HIGH_LATENCY` | measured step latency | at or above `high_latency_ms`, below timeout | route-local, clears when the signal drops, severity rises if it repeats |
+| `TIMEOUT_RISK` | timeout flag or step latency | timeout, or latency at or above `timeout_risk_ms` | route-local, always critical |
+| `TOOL_FAILURE` | runtime-reported tool error | tool error, or a failed step while retries remain | route-local |
+| `REPEATED_ACTION` | radar-derived repeat counter | counter at or above threshold | route-local |
+| `LOW_CONFIDENCE` | runtime-reported confidence | below `low_confidence` | route-local. The number is not ground truth |
+| `STALE_DATA` | tool-reported freshness | at or above `stale_data_s` | route-local |
+| `NO_PROGRESS` | radar-derived stall counter | steps without progress at or above threshold | route-local |
+| `ROUTE_FAILURE` | failed step after retries are exhausted | not a timeout | route-local |
+| `BUDGET_RISK` | tokens or measured execution time | warning ratio, or the hard limit | flight-global, does not clear on reroute |
+| `SIDE_EFFECT_RISK` | committed side-effect class | retry or reroute would repeat or abandon an unsafe write | flight-global |
+
+Detector confidence is 1.0 when the rule matches. That is not the agent's
+self-reported confidence. Definitions live in `aeris/policies/catalog.py`.
+
+## Side effects
+
+A waypoint declares one of:
+
+- `READ_ONLY` — retry and reroute are allowed
+- `IDEMPOTENT_WRITE` — retry is allowed when an idempotency key exists
+- `REVERSIBLE_WRITE` — retry or reroute runs compensation first
+- `IRREVERSIBLE_WRITE` — automatic retry and reroute are rejected
+
+An idempotent write without a key is not retried. Compensation is an
+operation the director runs before the follow-up retry or reroute. It
+is not a flight state.
 
 ## ATC decisions
 
@@ -48,18 +75,44 @@ did not happen as far as science is concerned.
 
 ## Human ATC
 
-`WAITING_HUMAN` is a holding fix. The process does not guess. A human
-controller may continue, retry, reroute, or abort. That action is
-written to the recorder before the flight moves.
+`WAITING_HUMAN` is a holding fix. The recorded request includes the
+route, waypoint, hazards, evidence, alternatives, recent telemetry,
+side-effect state, and the actions that role is allowed to take.
+
+Roles are `OBSERVER`, `CONTROLLER`, and `ADMIN`. Observers cannot steer.
+Controllers can continue, hold, and retry or reroute when the side-effect
+policy agrees. Only an admin can abort. An irreversible write that already
+committed cannot be retried just because the request says so.
 
 ## Flight recorder
 
-The recorder is a black box: append-only SQLite (or an in-memory log in
-tests). `GET /flights/{id}/timeline` folds events in sequence. If a
-field is not on the timeline, it did not happen.
+The recorder is append-only SQLite, or an in-memory log in tests. Each
+event stores `previous_hash` and `event_hash`:
+
+```
+hash = SHA256(canonical_json(event) + previous_hash)
+```
+
+Verification fails if a payload is edited or a middle event is removed
+without rewriting the chain. It does not detect a deleted tail, and it
+is not a signature: anyone who can rewrite the later hashes can forge a
+consistent history. See [THREAT_MODEL.md](THREAT_MODEL.md).
+
+## Provenance
+
+Radar labels signals as `MEASURED`, `RUNTIME_REPORTED`, `TOOL_REPORTED`,
+or `DERIVED`. Latency is measured by AERIS. Confidence and progress are
+runtime-reported and are not treated as ground truth.
 
 ## Adapters
 
-`AgentRuntime.execute_waypoint` is the only integration surface. A
-future LangGraph or ADK adapter should implement that protocol. AERIS
-core must keep importing none of those libraries.
+`AgentRuntime` declares capabilities: cancel, retry, compensate,
+idempotency, progress, streaming. ATC will not ask a runtime for an
+intervention it cannot perform. Cancellation is cooperative. AERIS can
+refuse to start the next waypoint. A runtime may stop at a checkpoint.
+Python cannot preempt a call that does not poll.
+
+`SimplePythonAgentRuntime` is the one local adapter. It dispatches a
+waypoint name to a Python callable and does not call an LLM. The
+scenario simulator remains the deterministic experiment runtime. AERIS
+core does not import an agent framework.

@@ -2,27 +2,35 @@
 
 ## V0 — this repository
 
-Local-first ATC loop, simulator, SQLite recorder, FastAPI, pytest,
-CONTROL vs AERIS harness. No LLM required.
+Local-first ATC loop, simulator, one local Python agent adapter,
+SQLite recorder with a hash chain, FastAPI, pytest, CONTROL vs AERIS
+harness. No LLM API key. No network in tests.
 
-Milestone checklist:
+Done in this tree:
 
-1. Domain models and state machine
-2. Radar, hazards, planner, controller
-3. Flight director and recorder
-4. Simulator scenarios including a falsifying `all_routes_fail`
-5. HTTP + HITL
-6. Evaluation harness
-7. Docs and tests that run offline
+- side-effect classes, idempotency keys, compensation, unsafe retry/reroute rejection
+- detector catalog and precision / recall / MTTD / MTTI / MTTR
+- operator roles and human requests with context
+- tamper-evident recorder
+- `SimplePythonAgentRuntime` and `examples/first_flight.py`
+- GitHub Actions running `ruff check` and `pytest`
 
-## V1 — real runtimes
+Still thin:
 
-- Adapters for at least one real framework (`AgentRuntime` only)
-- Trace attributes from live token usage and tool errors
-- Policy files loaded from disk, not just defaults
-- Richer human console (still optional; API remains the source of truth)
+- compensation is in-process and synchronous
+- authorization is a role enum, not an identity system
+- the hash chain has no external anchor
+- the Python adapter does not call a model
+- no live-agent experiment
 
-## V2 — distribution without rewriting the domain
+## V1 — a runtime that can actually fail in the wild
+
+- One opt-in adapter that calls a model, still behind `AgentRuntime`, tests remaining offline
+- Freeze thresholds before measuring that adapter
+- Seeded repetitions if the runtime is stochastic
+- Policy files loaded from disk
+
+## V2 — distribution, only if a measured gap needs it
 
 - Recorder implementation on Postgres or an event log
 - Optional NATS/Kafka transport for telemetry

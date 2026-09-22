@@ -11,6 +11,7 @@ from typing import Any
 
 from aeris.core.enums import EventType
 from aeris.recorder.base import RecordedEvent
+from aeris.recorder.integrity import GENESIS_HASH, canonical_event, chain_hash
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -21,7 +22,9 @@ CREATE TABLE IF NOT EXISTS events (
     payload TEXT NOT NULL,
     mission_id TEXT,
     route_id TEXT,
-    waypoint_id TEXT
+    waypoint_id TEXT,
+    previous_hash TEXT NOT NULL DEFAULT '',
+    event_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_flight ON events(flight_id, seq);
 """
@@ -42,6 +45,13 @@ class SqliteFlightRecorder:
     def _init(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+            if "previous_hash" not in columns:
+                conn.execute(
+                    "ALTER TABLE events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''"
+                )
+            if "event_hash" not in columns:
+                conn.execute("ALTER TABLE events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''")
             conn.commit()
 
     async def append(
@@ -79,10 +89,32 @@ class SqliteFlightRecorder:
         waypoint_id: str | None,
     ) -> RecordedEvent:
         with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT event_hash FROM events
+                WHERE flight_id = ?
+                ORDER BY seq DESC LIMIT 1
+                """,
+                (flight_id,),
+            ).fetchone()
+            previous = row["event_hash"] if row and row["event_hash"] else GENESIS_HASH
+            canonical = canonical_event(
+                flight_id=flight_id,
+                event_type=event_type,
+                timestamp=timestamp,
+                payload=payload,
+                mission_id=mission_id,
+                route_id=route_id,
+                waypoint_id=waypoint_id,
+            )
+            digest = chain_hash(previous, canonical)
             cursor = conn.execute(
                 """
-                INSERT INTO events (flight_id, event_type, timestamp, payload, mission_id, route_id, waypoint_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO events (
+                    flight_id, event_type, timestamp, payload, mission_id, route_id,
+                    waypoint_id, previous_hash, event_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     flight_id,
@@ -92,6 +124,8 @@ class SqliteFlightRecorder:
                     mission_id,
                     route_id,
                     waypoint_id,
+                    previous,
+                    digest,
                 ),
             )
             conn.commit()
@@ -104,6 +138,8 @@ class SqliteFlightRecorder:
                 mission_id=mission_id,
                 route_id=route_id,
                 waypoint_id=waypoint_id,
+                previous_hash=previous,
+                event_hash=digest,
             )
 
     async def timeline(self, flight_id: str) -> list[RecordedEvent]:
@@ -131,6 +167,7 @@ class SqliteFlightRecorder:
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> RecordedEvent:
+        keys = row.keys()
         return RecordedEvent(
             seq=int(row["seq"]),
             flight_id=row["flight_id"],
@@ -140,4 +177,6 @@ class SqliteFlightRecorder:
             mission_id=row["mission_id"],
             route_id=row["route_id"],
             waypoint_id=row["waypoint_id"],
+            previous_hash=row["previous_hash"] if "previous_hash" in keys else "",
+            event_hash=row["event_hash"] if "event_hash" in keys else "",
         )

@@ -10,12 +10,27 @@ from typing import Protocol
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
+    def advance(self, milliseconds: float) -> datetime: ...
+
     async def sleep(self, seconds: float) -> None: ...
 
 
 class SystemClock:
+    """Wall clock plus a virtual offset.
+
+    ``advance`` moves recorded time without sleeping. Holds still use
+    ``sleep``, which does wait. Experiments should inject a FakeClock.
+    """
+
+    def __init__(self) -> None:
+        self._offset = timedelta(0)
+
     def now(self) -> datetime:
-        return datetime.now(UTC)
+        return datetime.now(UTC) + self._offset
+
+    def advance(self, milliseconds: float) -> datetime:
+        self._offset += timedelta(milliseconds=milliseconds)
+        return self.now()
 
     async def sleep(self, seconds: float) -> None:
         if seconds > 0:

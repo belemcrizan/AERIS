@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from aeris.core.enums import SignalProvenance
 from aeris.core.ids import new_id
 from aeris.core.models import Agent, Flight, StepObservation
 from aeris.radar.engine import RadarEngine
@@ -41,3 +42,5 @@ def test_radar_normalizes_latency_and_counters():
     assert event.metrics.confidence == 0.2
     assert event.metrics.token_usage == 40
     assert event.metrics.step_success is False
+    assert event.provenance["confidence"] == SignalProvenance.RUNTIME_REPORTED
+    assert event.provenance["step_latency_ms"] == SignalProvenance.MEASURED

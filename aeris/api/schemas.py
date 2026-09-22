@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from aeris.core.enums import InterventionMode
+from aeris.core.enums import InterventionMode, OperatorRole
 
 
 class MissionCreate(BaseModel):
@@ -21,5 +21,6 @@ class FlightCreate(BaseModel):
 
 class HumanControlBody(BaseModel):
     operator: str = "human"
+    role: OperatorRole = OperatorRole.CONTROLLER
     reason: str = "human controller action"
     route_id: str | None = Field(default=None, description="Required for explicit reroute")

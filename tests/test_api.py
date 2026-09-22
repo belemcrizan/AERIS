@@ -71,7 +71,7 @@ def test_human_reroute_and_abort(tmp_path: Path):
         abort_id = blocked.json()["flight_id"]
         aborted = client.post(
             f"/flights/{abort_id}/control/abort",
-            json={"reason": "stop"},
+            json={"reason": "stop", "role": "ADMIN"},
         )
         assert aborted.json()["state"] == "ABORTED"
 

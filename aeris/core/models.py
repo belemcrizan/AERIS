@@ -11,7 +11,18 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from aeris.core.enums import ControlAction, ExecutionState, HazardSeverity, HazardType
+from aeris.core.enums import (
+    ControlAction,
+    ExecutionState,
+    FailureReason,
+    HazardScope,
+    HazardSeverity,
+    HazardType,
+    OperatorRole,
+    SideEffectClass,
+    SignalProvenance,
+)
+from aeris.core.errors import NoRouteAvailable
 from aeris.core.ids import new_id
 
 
@@ -33,6 +44,10 @@ class Waypoint(BaseModel):
     name: str
     index: int
     description: str = ""
+    side_effect: SideEffectClass = SideEffectClass.READ_ONLY
+    idempotency_key: str | None = None
+    supports_idempotency: bool = False
+    compensation_name: str | None = None
 
 
 class Route(BaseModel):
@@ -43,6 +58,7 @@ class Route(BaseModel):
     estimated_reliability: float = 0.8
     estimated_latency_ms: float = 1000.0
     estimated_cost: float = 1.0
+    side_effect_risk: float = 0.0
     is_human: bool = False
 
 
@@ -90,6 +106,7 @@ class TelemetryEvent(BaseModel):
     waypoint_id: str | None = None
     timestamp: datetime
     metrics: TelemetryMetrics
+    provenance: dict[str, SignalProvenance] = Field(default_factory=dict)
 
 
 class StepObservation(BaseModel):
@@ -112,6 +129,24 @@ class StepObservation(BaseModel):
     output: str | None = None
     error: str | None = None
     repeat_signal: bool = False
+    side_effect_class: SideEffectClass = SideEffectClass.READ_ONLY
+    side_effect_committed: bool = False
+    idempotency_key: str | None = None
+    duplicate_suppressed: bool = False
+    compensation_available: bool = False
+    fault_injected: bool = False
+    fault_kind: str | None = None
+    cancelled: bool = False
+
+
+class CommittedEffect(BaseModel):
+    waypoint_id: str
+    waypoint_name: str
+    route_id: str
+    side_effect: SideEffectClass
+    idempotency_key: str | None = None
+    compensation_name: str | None = None
+    compensated: bool = False
 
 
 class Hazard(BaseModel):
@@ -123,6 +158,9 @@ class Hazard(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     confidence: float = 1.0
     recommended_action: ControlAction
+    scope: HazardScope = HazardScope.ROUTE_LOCAL
+    auto_clear: bool = True
+    occurrence: int = 1
 
 
 class ScoredRoute(BaseModel):
@@ -140,6 +178,9 @@ class ControlDecision(BaseModel):
     previous_route: str | None = None
     new_route: str | None = None
     timestamp: datetime
+    compensation_required: bool = False
+    follow_up: ControlAction | None = None
+    blocked_reason: str | None = None
 
 
 class HumanIntervention(BaseModel):
@@ -147,6 +188,7 @@ class HumanIntervention(BaseModel):
     flight_id: str
     action: ControlAction
     operator: str = "human"
+    role: OperatorRole = OperatorRole.ADMIN
     reason: str
     route_id: str | None = None
     timestamp: datetime
@@ -169,6 +211,10 @@ class FlightResult(BaseModel):
     route_changes: int = 0
     human_interventions: int = 0
     hazard_count: int = 0
+    failure_reason: FailureReason | None = None
+    side_effect_incidents: int = 0
+    compensations: int = 0
+    compensation_failures: int = 0
 
 
 class Flight(BaseModel):
@@ -188,10 +234,23 @@ class Flight(BaseModel):
     created_at: datetime
     updated_at: datetime
     result: FlightResult | None = None
+    accumulated_cost: float = 0.0
+    execution_time_ms: float = 0.0
+    committed_effects: list[CommittedEffect] = Field(default_factory=list)
+    failure_reason: FailureReason | None = None
+    compensation_count: int = 0
+    compensation_failures: int = 0
+    side_effect_incidents: int = 0
+    hazard_count: int = 0
+    cancel_requested: bool = False
+    runtime_can_compensate: bool = False
+    runtime_supports_idempotency: bool = False
+    runtime_can_retry: bool = True
+    runtime_can_cancel: bool = False
 
     def current_route(self) -> Route:
         if self.plan is None or self.current_route_id is None:
-            raise RuntimeError("flight has no current route")
+            raise NoRouteAvailable("flight has no current route")
         return self.plan.route_by_id(self.current_route_id)
 
     def current_waypoint(self) -> Waypoint | None:
@@ -199,6 +258,12 @@ class Flight(BaseModel):
         if self.current_waypoint_index >= len(route.waypoints):
             return None
         return route.waypoints[self.current_waypoint_index]
+
+    def open_effects(self, route_id: str | None = None) -> list[CommittedEffect]:
+        effects = [effect for effect in self.committed_effects if not effect.compensated]
+        if route_id is None:
+            return effects
+        return [effect for effect in effects if effect.route_id == route_id]
 
 
 def make_decision(
@@ -210,6 +275,9 @@ def make_decision(
     previous_route: str | None = None,
     new_route: str | None = None,
     evidence: dict[str, Any] | None = None,
+    compensation_required: bool = False,
+    follow_up: ControlAction | None = None,
+    blocked_reason: str | None = None,
 ) -> ControlDecision:
     return ControlDecision(
         decision_id=new_id("dec"),
@@ -220,4 +288,7 @@ def make_decision(
         previous_route=previous_route,
         new_route=new_route,
         timestamp=timestamp,
+        compensation_required=compensation_required,
+        follow_up=follow_up,
+        blocked_reason=blocked_reason,
     )

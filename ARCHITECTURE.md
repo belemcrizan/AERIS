@@ -70,7 +70,11 @@ Rejected for V0 because they are not required to test the hypothesis:
 - Graph-based planners with search
 - Multi-agent coordination
 - LLM-based hazard detection (it would make the detector opaque)
-- A real agent-framework adapter beyond the `AgentRuntime` protocol
+- A real agent-framework adapter is not required to test the hypothesis.
+  `SimplePythonAgentRuntime` is a local tool loop, not a framework port.
+- `COMPENSATING` as a flight state. Compensation is an operation inside
+  the intervention that required it. A new state would add transitions
+  without changing who decides.
 
 Kept, even though they add files:
 
@@ -169,8 +173,14 @@ destination or terminal failure
 FlightRecorder contains the history
 ```
 
-On `ESCALATE_HUMAN` the director stops and waits. HTTP
-`/flights/{id}/control/*` records a `HumanIntervention` and resumes.
+On `ESCALATE_HUMAN` the director records a `HumanInterventionRequest`
+and stops. HTTP `/flights/{id}/control/*` checks role and side-effect
+policy, then records the decision and resumes.
+
+`COMPENSATE` is not a state. If a reversible write is committed, the
+director runs `runtime.compensate` and records the result before the
+follow-up retry or reroute. A failed compensation ends the flight with
+`compensation_failure`.
 
 ## 8. Experiment
 
@@ -179,15 +189,24 @@ Two arms, same scenarios, same injected faults:
 - **CONTROL**: radar on, controller always CONTINUE.
 - **AERIS**: radar + hazards + routing + intervention.
 
-Metrics: `task_success_rate`, `terminal_failure_rate`, `mean_latency`,
-`number_of_retries`, `number_of_route_changes`, `human_interventions`,
-`recovery_rate`.
+Metrics include task success, terminal failure, recovery and its delta,
+detector precision and recall, false-positive and false-negative rates,
+mean time to detect, intervene, and recover, intervention precision,
+and compensation success. A rate is null when the denominator is zero.
 
-`recovery_rate` is computed only on scenarios that inject a terminal
-failure. `all_routes_fail` is included so a universal "AERIS always
-saves the flight" claim can be falsified.
+`recovery_rate` uses only scenarios that inject a terminal failure.
+`all_routes_fail` falsifies "AERIS always saves the flight".
+`false_low_confidence` falsifies "every intervention helps".
 
-The harness never prints "hypothesis confirmed".
+The harness never prints "hypothesis confirmed". Identical repeats are
+not a statistical sample.
+
+## Recorder integrity
+
+`event_hash = SHA256(canonical_payload + previous_hash)` per flight.
+This detects an edited payload or a deleted middle event if the stored
+hashes are left unchanged. It does not authenticate the writer and does
+not detect truncation of the tail. See THREAT_MODEL.md.
 
 ## Implementation notes
 

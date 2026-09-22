@@ -19,6 +19,8 @@ class RecordedEvent(BaseModel):
     mission_id: str | None = None
     route_id: str | None = None
     waypoint_id: str | None = None
+    previous_hash: str = ""
+    event_hash: str = ""
 
 
 @runtime_checkable

@@ -61,7 +61,50 @@ The harness prints numbers. It does not print a publication claim.
 
 ## What would count as a later result
 
-A later version may plug a real `AgentRuntime` into the same recorder
-and harness, freeze policies **before** looking at metrics, and
-pre-register the scenario mix. Until then, treat V0 numbers as a test
-of the instrument, not of agents in the wild.
+A later version may plug more `AgentRuntime` adapters into the same
+recorder and harness, freeze policies **before** looking at metrics, and
+pre-register the scenario mix. `SimplePythonAgentRuntime` shows the
+contract on a local tool loop. It is not evidence about LLM agents.
+
+Until a seeded stochastic runtime is measured, treat V0 numbers as a
+test of the instrument.
+
+## Measurement, not just recovery
+
+Recovery rate is not sufficient. The harness also reports detector
+precision, recall, false-positive rate, false-negative rate, mean time
+to detect (fault injection timestamp to the next hazard), mean time to
+intervention (that hazard to the first non-CONTINUE decision), and mean
+time to recovery (fault injection to a successful completion).
+
+Times use the injected clock. Tests do not sleep.
+
+`intervention_precision` is useful interventions divided by all
+interventions. A healthy flight that is rerouted counts against AERIS.
+`false_low_confidence` is the fixture where that happens: Alpha is fine,
+the agent reports low confidence, Bravo then fails, CONTROL completes,
+and AERIS does not.
+
+Undefined rates are null. Examples: precision when nothing was flagged,
+compensation success when no compensation ran, mean time to intervention
+on the CONTROL arm.
+
+## Statistics
+
+These fixtures are deterministic. Repeating them does not create
+independent samples, so V0 does not report p-values. A later stochastic
+runtime needs seeded repetitions designed before the run.
+
+## Failure provenance
+
+A failed flight keeps a reason: `tool_failure`, `timeout`,
+`budget_exhaustion`, `route_exhaustion`, `unsafe_retry_blocked`,
+`unsafe_reroute_blocked`, `compensation_failure`, `human_abort`,
+`policy_abort`, `invalid_runtime_output`, or `cancelled`. `FAILED` alone
+is not a postmortem.
+
+## CONTROL
+
+CONTROL uses the same runtime, scenario, injected fault, route
+candidates, clock, and initial conditions. It records radar, hazards,
+and decisions. Every decision is CONTINUE. It is not a weakened agent.

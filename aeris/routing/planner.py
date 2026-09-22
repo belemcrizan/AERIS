@@ -6,8 +6,9 @@ a human (or the recorder) can see why a route won.
 
 from __future__ import annotations
 
-from aeris.core.models import Flight, FlightPlan, Hazard, Route, ScoredRoute
+from aeris.core.errors import NoRouteAvailable
 from aeris.core.ids import new_id
+from aeris.core.models import Flight, FlightPlan, Hazard, Route, ScoredRoute
 
 
 class RoutePlanner:
@@ -16,6 +17,7 @@ class RoutePlanner:
     cost_weight: float = 0.3
     failure_weight: float = 0.25
     hazard_weight: float = 0.1
+    side_effect_weight: float = 0.2
 
     def plan(
         self,
@@ -40,7 +42,7 @@ class RoutePlanner:
                 exclude_human=False,
             )
         if not scored:
-            raise ValueError("no routes available to plan")
+            raise NoRouteAvailable("no routes available to plan")
         winner = scored[0]
         return FlightPlan(
             plan_id=new_id("plan"),
@@ -81,20 +83,33 @@ class RoutePlanner:
     ) -> ScoredRoute:
         latency_n = min(route.estimated_latency_ms / 5000.0, 1.0)
         cost_n = min(route.estimated_cost / 10.0, 1.0)
+        side_effect_n = min(max(route.side_effect_risk, 0.0), 1.0)
         failures = 1.0 if route.route_id in failed else 0.0
         hazard_penalty = self.hazard_weight * len(hazards)
         criticals = sum(1 for hazard in hazards if hazard.severity.value == "CRITICAL")
         hazard_penalty += 0.3 * criticals
+        reliability_term = self.reliability_weight * route.estimated_reliability
+        latency_penalty = self.latency_weight * latency_n
+        cost_penalty = self.cost_weight * cost_n
+        failure_penalty = self.failure_weight * failures * 4
+        side_effect_penalty = self.side_effect_weight * side_effect_n
         score = (
-            self.reliability_weight * route.estimated_reliability
-            - self.latency_weight * latency_n
-            - self.cost_weight * cost_n
-            - self.failure_weight * failures * 4
+            reliability_term
+            - latency_penalty
+            - cost_penalty
+            - failure_penalty
             - hazard_penalty
+            - side_effect_penalty
         )
         if route.is_human:
             score -= 0.4
         reasons = [
+            f"+ reliability {route.estimated_reliability:.2f} -> {reliability_term:.3f}",
+            f"- latency penalty {latency_penalty:.3f}",
+            f"- cost penalty {cost_penalty:.3f}",
+            f"- current hazard penalty {hazard_penalty:.3f}",
+            f"- failed route penalty {failure_penalty:.3f}",
+            f"- side_effect_risk penalty {side_effect_penalty:.3f}",
             f"reliability={route.estimated_reliability:.2f} * {self.reliability_weight}",
             f"latency_norm={latency_n:.2f} * {self.latency_weight}",
             f"cost_norm={cost_n:.2f} * {self.cost_weight}",
