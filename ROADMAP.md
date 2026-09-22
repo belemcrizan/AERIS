@@ -15,20 +15,49 @@ Done in this tree:
 - `SimplePythonAgentRuntime` and `examples/first_flight.py`
 - GitHub Actions running `ruff check` and `pytest`
 
-Still thin:
-
-- compensation is in-process and synchronous
-- authorization is a role enum, not an identity system
-- the hash chain has no external anchor
-- the Python adapter does not call a model
-- no live-agent experiment
-
 ## V1 — a runtime that can actually fail in the wild
 
-- One opt-in adapter that calls a model, still behind `AgentRuntime`, tests remaining offline
-- Freeze thresholds before measuring that adapter
-- Seeded repetitions if the runtime is stochastic
-- Policy files loaded from disk
+Done in this tree:
+
+- explicit operator role on every control path; no implicit ADMIN
+- per-flight lock plus optimistic `control_version`
+- cancellation end to end, with request and outcome recorded separately
+- fault instances, deterministic fault-to-hazard matching, event-level
+  precision/recall, MTTD/MTTI/MTTR from matched events
+- intervention utility from paired outcomes
+- contextual radar (median/MAD baselines) with STATIC/CONTEXTUAL modes
+- failure-domain diversity, route failure history, shared-dependency penalty
+- optional signed checkpoints, tail-truncation detection
+- one opt-in OpenAI-compatible adapter behind `AgentRuntime` (stdlib only)
+- enterprise support case: tools, sandbox ledger, fault proxy, evaluator,
+  18-scenario campaign including negative controls
+- paired experiment runner with ablations, calibration/validation/test
+  seed split, configuration hashes, cost accounting, bootstrap CIs gated
+  on stochasticity and N, JSONL/JSON/CSV/Markdown reports
+- small HTML console over a domain view
+- pre-registered protocol
+
+Not done:
+
+- **the live experiment has not been run**
+- contextual token range is too narrow as calibrated (see BENCHMARK.md)
+- CONTROL is a single weak baseline; no retry-with-backoff wrapper arm
+- policy is Python defaults, not files loaded from disk
+- compensation is in-process and synchronous
+- authorization is a role enum, not an identity system
+- checkpoints have no external anchor
+
+## V1.1 — next milestone
+
+1. Run the pre-registered live campaign (N=30) on one small model and
+   publish the report as-is, including unfavourable results.
+2. Add a stronger baseline arm: the same agent with a retry-with-backoff
+   wrapper and no AERIS. Without it, "AERIS beats CONTROL" partly means
+   "any supervisor beats none".
+3. Fix the token baseline calibration by learning from retried and
+   rerouted healthy flights too, as a new protocol version, then re-run.
+4. Repeat on a second model family to see whether the effect survives a
+   change of model.
 
 ## V2 — distribution, only if a measured gap needs it
 
@@ -40,7 +69,7 @@ The Pydantic models in `aeris.core` should not change shape for this.
 
 ## V3 — research that could fail in public
 
-- Pre-registered evaluation on a frozen scenario mix
+- Pre-registered evaluation on a frozen scenario mix (protocol exists; live run pending)
 - Comparison against other intervention policies
 - Only then: learned ranking, graph search, multi-agent traffic
 

@@ -1,7 +1,7 @@
 # Concepts
 
 AERIS borrows ATC language so that runtime control stays inspectable.
-This page is the glossary for V0.
+This page is the glossary for V0 and V1. V1 terms are at the end.
 
 ## Mission, flight, route
 
@@ -79,9 +79,10 @@ did not happen as far as science is concerned.
 route, waypoint, hazards, evidence, alternatives, recent telemetry,
 side-effect state, and the actions that role is allowed to take.
 
-Roles are `OBSERVER`, `CONTROLLER`, and `ADMIN`. Observers cannot steer.
-Controllers can continue, hold, and retry or reroute when the side-effect
-policy agrees. Only an admin can abort. An irreversible write that already
+Roles are `OBSERVER`, `CONTROLLER`, and `ADMIN`. The role must be
+given; there is no default. Observers cannot steer. Controllers can
+continue, hold, and retry or reroute when the side-effect policy agrees.
+Only an admin can abort or cancel. An irreversible write that already
 committed cannot be retried just because the request says so.
 
 ## Flight recorder
@@ -112,7 +113,70 @@ intervention it cannot perform. Cancellation is cooperative. AERIS can
 refuse to start the next waypoint. A runtime may stop at a checkpoint.
 Python cannot preempt a call that does not poll.
 
-`SimplePythonAgentRuntime` is the one local adapter. It dispatches a
-waypoint name to a Python callable and does not call an LLM. The
-scenario simulator remains the deterministic experiment runtime. AERIS
-core does not import an agent framework.
+`SimplePythonAgentRuntime` dispatches a waypoint name to a Python
+callable and does not call an LLM. `LLMToolAgentRuntime` (V1) runs each
+waypoint as a phase of a tool-calling conversation with a `ChatModel`:
+either the live `OpenAIChatModel` or the offline `ScriptedSupportModel`.
+The scenario simulator remains the deterministic V0 runtime. AERIS core
+does not import an agent framework.
+
+## V1 terms
+
+**Fault instance.** One injected fault on one flight: `fault_id`,
+route, waypoint, type, onset, optional recovery, severity, target, and
+`ground_truth`. A misleading signal (for example a false low confidence
+on a healthy route) is injected with `ground_truth=false`, so flagging it
+counts as a false positive. Controllers never see fault instances.
+
+**Fault-to-hazard matching.** After a flight, each hazard is attributed
+to at most one fault: compatible type, same route, same waypoint (unless
+the fault is flight-scoped), within 60 s of onset. Unattributed hazards
+are false positives. Faults with no hazard are false negatives.
+
+**MTTD / MTTI / MTTR.** Time from fault onset to the first matched
+hazard; from that hazard to the first non-CONTINUE decision that names
+a compatible hazard; from onset to successful completion.
+
+**Intervention utility.** For each AERIS flight that intervened,
+compare with the paired CONTROL flight. AERIS acceptable and CONTROL not:
+BENEFICIAL. The reverse: HARMFUL. Same outcome: NEUTRAL, unless one side
+caused more duplicate or unsafe effects. UNRESOLVED when CONTROL never
+hit the fault that triggered the intervention.
+
+**Trial pair.** One CONTROL flight and one AERIS flight with the same
+scenario, seed, prompt, temperature, fixtures, and fault schedule. With
+a real model the trajectories still differ; pairing is analytic.
+
+**Contextual baseline.** Expected latency (median, MAD) and token range
+for one (runtime, route, waypoint, tool). Latency is flagged when the
+robust z-score `(x − median) / (1.4826 · MAD)` reaches the threshold.
+The hazard evidence carries observed value, median, MAD, z, and
+threshold. `STATIC_THRESHOLD` mode ignores baselines.
+
+**Failure domain.** What a route depends on: model provider, model
+family, tool provider, data source, region, network, service ids. Two
+routes that share them are not independent, however different their
+names. **Diversity** is a weighted share of attributes that differ, in
+[0, 1], with a per-attribute explanation.
+
+**Route failure history.** Per flight: which route failed, on which
+hazard, at which tool and provider, on which dependencies, how often.
+The planner penalizes a candidate that uses a dependency that already
+failed.
+
+**Control version.** An integer on the flight, incremented by every
+applied human action. A caller may send the version it saw; if it moved,
+the action is rejected rather than applied twice.
+
+**Cancellation outcome.** What actually happened to a cancel request:
+before start, between waypoints, during a waypoint, not supported, after
+a side-effect commit, or after the flight ended. Request and outcome are
+separate events.
+
+**Checkpoint.** A record of a flight's last sequence number and hash,
+stored apart from the events and optionally signed. It lets a verifier
+notice that the tail of the log was deleted.
+
+**Configuration identity.** Hashes of the policy, planner weights, route
+set, and agent prompt, plus versions of the adapter, scenarios, fixtures,
+and evaluator. Every experiment record carries them.

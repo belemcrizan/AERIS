@@ -2,26 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
 from aeris import __version__
+from aeris.api.console_page import CONSOLE_HTML
 from aeris.api.schemas import FlightCreate, HumanControlBody, MissionCreate
 from aeris.config import Settings
 from aeris.control.controller import ATCController
 from aeris.control.director import FlightDirector
-from aeris.core.enums import ControlAction, EventType, ExecutionState
+from aeris.core.enums import ControlAction, EventType
 from aeris.core.errors import (
     AerisError,
     UnauthorizedIntervention,
 )
 from aeris.core.state_machine import InvalidTransition
+from aeris.human.console import console_view
 from aeris.policies.detector import HazardDetector
 from aeris.policies.thresholds import ThresholdPolicy
 from aeris.radar.engine import RadarEngine
-from aeris.recorder.integrity import verify_events
+from aeris.recorder.integrity import verify_events, verify_flight
 from aeris.recorder.replay import reconstruct_flight, timeline_view
 from aeris.recorder.sqlite import SqliteFlightRecorder
 from aeris.routing.planner import RoutePlanner
@@ -36,6 +40,7 @@ class AppContext:
         self.recorder = SqliteFlightRecorder(settings.db_path)
         self.directors: dict[str, FlightDirector] = {}
         self.missions: dict[str, Any] = {}
+        self.tasks: dict[str, asyncio.Task] = {}
 
     def policy(self, human_on_critical: bool | None = None) -> ThresholdPolicy:
         return ThresholdPolicy(
@@ -114,6 +119,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             context.missions[mission.mission_id] = mission
         flight = director.create_flight(mission)
         context.directors[flight.flight_id] = director
+        if body.background:
+            context.tasks[flight.flight_id] = asyncio.create_task(director.run(flight, scenario.routes))
+            await asyncio.sleep(0)
+            return flight.model_dump(mode="json")
         await director.run(flight, scenario.routes)
         return flight.model_dump(mode="json")
 
@@ -192,7 +201,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def get_integrity(flight_id: str) -> dict[str, Any]:
         events = await _require_timeline(ctx(), flight_id)
         report = verify_events(events)
-        return {"flight_id": flight_id, **report.model_dump()}
+        recorder = ctx().recorder
+        full = verify_flight(events, await recorder.checkpoints(flight_id), recorder.signer)
+        return {
+            "flight_id": flight_id,
+            **report.model_dump(),
+            "chain": full.chain.value,
+            "signature": full.signature.value,
+            "tail": full.tail.value,
+            "checkpoints": full.checkpoints,
+            "unanchored_events": full.unanchored_events,
+        }
 
     @app.get("/flights/{flight_id}/human-request")
     async def get_human_request(flight_id: str) -> dict[str, Any]:
@@ -206,24 +225,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return director.human_requests[flight_id].model_dump(mode="json")
 
     @app.post("/flights/{flight_id}/control/continue")
-    async def control_continue(flight_id: str, body: HumanControlBody | None = None) -> dict[str, Any]:
+    async def control_continue(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
         return await _human(ctx(), flight_id, ControlAction.CONTINUE, body)
 
     @app.post("/flights/{flight_id}/control/retry")
-    async def control_retry(flight_id: str, body: HumanControlBody | None = None) -> dict[str, Any]:
+    async def control_retry(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
         return await _human(ctx(), flight_id, ControlAction.RETRY, body)
 
     @app.post("/flights/{flight_id}/control/hold")
-    async def control_hold(flight_id: str, body: HumanControlBody | None = None) -> dict[str, Any]:
+    async def control_hold(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
         return await _human(ctx(), flight_id, ControlAction.HOLD, body)
 
     @app.post("/flights/{flight_id}/control/reroute")
-    async def control_reroute(flight_id: str, body: HumanControlBody | None = None) -> dict[str, Any]:
+    async def control_reroute(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
         return await _human(ctx(), flight_id, ControlAction.REROUTE, body)
 
     @app.post("/flights/{flight_id}/control/abort")
-    async def control_abort(flight_id: str, body: HumanControlBody | None = None) -> dict[str, Any]:
+    async def control_abort(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
         return await _human(ctx(), flight_id, ControlAction.ABORT, body)
+
+    @app.post("/flights/{flight_id}/control/cancel")
+    async def control_cancel(flight_id: str, body: HumanControlBody) -> dict[str, Any]:
+        director = _live_director(ctx(), flight_id)
+        try:
+            flight = await director.cancel(
+                flight_id, role=body.role, reason=body.reason, operator=body.operator
+            )
+        except UnauthorizedIntervention as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return {
+            "flight_id": flight_id,
+            "state": flight.state.value,
+            "cancel_status": flight.cancel_status.value if flight.cancel_status else None,
+            "cancel_outcome": flight.cancel_outcome.value if flight.cancel_outcome else None,
+        }
+
+    @app.get("/flights/{flight_id}/console")
+    async def get_console(flight_id: str) -> dict[str, Any]:
+        director = _live_director(ctx(), flight_id)
+        return console_view(director, director.flights[flight_id]).model_dump(mode="json")
+
+    @app.get("/console", response_class=HTMLResponse)
+    async def console_page() -> HTMLResponse:
+        return HTMLResponse(CONSOLE_HTML)
 
     return app
 
@@ -239,31 +283,30 @@ async def _require_timeline(context: AppContext, flight_id: str):
     return events
 
 
+def _live_director(context: AppContext, flight_id: str) -> FlightDirector:
+    director = context.directors.get(flight_id)
+    if director is None or flight_id not in director.flights:
+        raise HTTPException(status_code=404, detail="live flight not found")
+    return director
+
+
 @traced("aeris.human.intervention")
 async def _human(
     context: AppContext,
     flight_id: str,
     action: ControlAction,
-    body: HumanControlBody | None,
+    body: HumanControlBody,
 ) -> dict[str, Any]:
-    director = context.directors.get(flight_id)
-    if director is None or flight_id not in director.flights:
-        raise HTTPException(status_code=404, detail="live flight not found")
-    flight = director.flights[flight_id]
-    if action != ControlAction.ABORT and flight.state != ExecutionState.WAITING_HUMAN:
-        raise HTTPException(
-            status_code=409,
-            detail=f"flight is {flight.state.value}, human control requires WAITING_HUMAN",
-        )
-    payload = body or HumanControlBody()
+    director = _live_director(context, flight_id)
     try:
         updated = await director.apply_human_action(
             flight_id,
             action,
-            reason=payload.reason,
-            route_id=payload.route_id,
-            operator=payload.operator,
-            role=payload.role,
+            reason=body.reason,
+            route_id=body.route_id,
+            operator=body.operator,
+            role=body.role,
+            expected_version=body.expected_version,
         )
     except UnauthorizedIntervention as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

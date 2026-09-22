@@ -1,4 +1,4 @@
-from aeris.core.enums import ControlAction, EventType, ExecutionState
+from aeris.core.enums import ControlAction, EventType, ExecutionState, OperatorRole
 from tests.conftest import run_scenario
 
 
@@ -12,6 +12,7 @@ async def test_human_can_reroute_a_critical_flight():
         reason="controller diverts to bravo",
         operator="atc-1",
         route_id=bravo.route_id,
+        role=OperatorRole.CONTROLLER,
     )
     assert updated.state is ExecutionState.COMPLETED
     assert updated.human_interventions == 1
@@ -26,6 +27,7 @@ async def test_human_abort():
         flight.flight_id,
         ControlAction.ABORT,
         reason="mission no longer valid",
+        role=OperatorRole.ADMIN,
     )
     assert updated.state is ExecutionState.ABORTED
     assert updated.result is not None

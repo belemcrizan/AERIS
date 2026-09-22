@@ -9,8 +9,8 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from aeris.adapters.runtime import CompensationResult, ExecutionContext, RuntimeCapabilities
-from aeris.core.enums import SideEffectClass
-from aeris.core.models import StepObservation
+from aeris.core.enums import FaultType, SideEffectClass
+from aeris.core.models import FaultInstance, StepObservation
 
 
 class InjectedFault(BaseModel):
@@ -32,6 +32,27 @@ class InjectedFault(BaseModel):
     commit_side_effect: bool = False
     compensation_fails: bool = False
     consumed: int = 0
+    schedule_id: str | None = None
+    ground_truth: bool = True
+
+    def fault_type(self) -> FaultType:
+        if self.lose_response:
+            return FaultType.LOST_RESPONSE_AFTER_COMMIT
+        if self.timeout:
+            return FaultType.TIMEOUT
+        if self.tool_failure or self.fail:
+            return FaultType.PERSISTENT_FAILURE if self.persistent else FaultType.TRANSIENT_FAILURE
+        if self.latency_ms is not None:
+            return FaultType.LATENCY
+        if self.stale_data_s is not None:
+            return FaultType.STALE_RESPONSE
+        if self.repeated_action:
+            return FaultType.REPEATED_ACTION
+        if self.no_progress:
+            return FaultType.NO_PROGRESS
+        if self.token_usage is not None:
+            return FaultType.BUDGET_OVERRUN
+        return FaultType.FALSE_CONFIDENCE
 
 
 class SimulatedAgent:
@@ -45,6 +66,11 @@ class SimulatedAgent:
         can_cancel: bool = False,
     ) -> None:
         self.faults = faults or []
+        for index, fault in enumerate(self.faults):
+            if fault.schedule_id is None:
+                fault.schedule_id = (
+                    f"sched-{index}:{fault.route_name or '*'}:{fault.waypoint_index}:{fault.fault_type().value}"
+                )
         self.base_latency_ms = base_latency_ms
         self.default_confidence = default_confidence
         self.default_freshness_s = default_freshness_s
@@ -203,7 +229,22 @@ class SimulatedAgent:
             compensation_available=bool(waypoint.compensation_name),
             fault_injected=fault is not None,
             fault_kind=fault_kind,
+            input_tokens=tokens,
+            tool_calls=1,
         )
+        if fault is not None:
+            observation.faults.append(
+                FaultInstance(
+                    fault_id="",
+                    schedule_id=fault.schedule_id or "sched",
+                    flight_id=flight.flight_id,
+                    route_id=route.route_id,
+                    waypoint_id=waypoint.waypoint_id,
+                    fault_type=fault.fault_type(),
+                    ground_truth=fault.ground_truth,
+                    target=f"{route.name}:{waypoint.name}",
+                )
+            )
 
         if key and committed:
             stored = observation.model_copy(deep=True)

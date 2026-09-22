@@ -1,6 +1,8 @@
 """Per-flight and aggregate experiment metrics.
 
-Rates that would divide by zero are null. V0 does not compute p-values:
+Detection counts are event-level (fault instance vs hazard event), see
+``aeris.evaluation.matching``. Rates that would divide by zero are null.
+Deterministic fixtures do not get p-values or confidence intervals:
 repeating a deterministic fixture does not create a sample.
 """
 
@@ -8,7 +10,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from aeris.core.enums import ExecutionState
+from aeris.core.enums import ExecutionState, InterventionOutcome
+from aeris.evaluation.pairing import utility_rates
 
 
 class FlightMetrics(BaseModel):
@@ -28,16 +31,23 @@ class FlightMetrics(BaseModel):
     false_positives: int = 0
     true_negatives: int = 0
     false_negatives: int = 0
+    duplicate_hazards: int = 0
+    unmatched_hazards: int = 0
+    unmatched_faults: int = 0
+    late_detections: int = 0
+    faults_injected: int = 0
     mttd_ms: float | None = None
     mtti_ms: float | None = None
     mttr_ms: float | None = None
     interventions: int = 0
     useful_interventions: int = 0
     unnecessary_interventions: int = 0
+    intervention_outcome: InterventionOutcome | None = None
     side_effect_incidents: int = 0
     compensations: int = 0
     compensation_failures: int = 0
     failure_reason: str | None = None
+    total_cost: float = 0.0
 
 
 class AggregateMetrics(BaseModel):
@@ -57,6 +67,10 @@ class AggregateMetrics(BaseModel):
     false_positive_count: int = 0
     true_negative_count: int = 0
     false_negative_count: int = 0
+    duplicate_hazard_count: int = 0
+    unmatched_hazard_count: int = 0
+    unmatched_fault_count: int = 0
+    late_detection_count: int = 0
     mean_time_to_detect: float | None = None
     mean_time_to_intervention: float | None = None
     mean_time_to_recovery: float | None = None
@@ -65,6 +79,10 @@ class AggregateMetrics(BaseModel):
     human_intervention_rate: float | None = None
     unnecessary_intervention_rate: float | None = None
     intervention_precision: float | None = None
+    beneficial_intervention_rate: float | None = None
+    harmful_intervention_rate: float | None = None
+    neutral_intervention_rate: float | None = None
+    unresolved_intervention_rate: float | None = None
     side_effect_incident_count: int = 0
     compensation_success_rate: float | None = None
 
@@ -106,6 +124,7 @@ def summarize(rows: list[FlightMetrics]) -> AggregateMetrics:
     unnecessary = sum(row.unnecessary_interventions for row in rows)
     compensations = sum(row.compensations for row in rows)
     compensation_failures = sum(row.compensation_failures for row in rows)
+    utility = utility_rates([row.intervention_outcome for row in rows])
     return AggregateMetrics(
         n=n,
         task_success_rate=sum(row.success for row in rows) / n,
@@ -123,6 +142,10 @@ def summarize(rows: list[FlightMetrics]) -> AggregateMetrics:
         false_positive_count=fp,
         true_negative_count=tn,
         false_negative_count=fn,
+        duplicate_hazard_count=sum(row.duplicate_hazards for row in rows),
+        unmatched_hazard_count=sum(row.unmatched_hazards for row in rows),
+        unmatched_fault_count=sum(row.unmatched_faults for row in rows),
+        late_detection_count=sum(row.late_detections for row in rows),
         mean_time_to_detect=_mean([row.mttd_ms for row in rows if row.mttd_ms is not None]),
         mean_time_to_intervention=_mean([row.mtti_ms for row in rows if row.mtti_ms is not None]),
         mean_time_to_recovery=_mean([row.mttr_ms for row in rows if row.mttr_ms is not None]),
@@ -131,6 +154,10 @@ def summarize(rows: list[FlightMetrics]) -> AggregateMetrics:
         human_intervention_rate=_ratio(sum(row.human_interventions > 0 for row in rows), n),
         unnecessary_intervention_rate=_ratio(unnecessary, interventions),
         intervention_precision=_ratio(useful, interventions),
+        beneficial_intervention_rate=utility["beneficial_intervention_rate"],
+        harmful_intervention_rate=utility["harmful_intervention_rate"],
+        neutral_intervention_rate=utility["neutral_intervention_rate"],
+        unresolved_intervention_rate=utility["unresolved_intervention_rate"],
         side_effect_incident_count=sum(row.side_effect_incidents for row in rows),
         compensation_success_rate=_ratio(compensations, compensations + compensation_failures),
     )

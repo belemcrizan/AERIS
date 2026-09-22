@@ -20,16 +20,25 @@ class CancelToken(BaseModel):
 
     Setting ``cancelled`` asks the runtime to stop at its next checkpoint.
     Python cannot hard-preempt a running function. ``checkpoint`` records
-    whether the cancel was observed before the tool body (``before``) or
-    after the runtime had entered it (``during``).
+    whether the cancel was requested before the tool body (``before``) or
+    after the runtime had entered it (``during``). ``observed`` is set by a
+    runtime that actually honoured the token; the director never assumes it.
     """
 
     cancelled: bool = False
     checkpoint: str = "before"
+    reason: str | None = None
+    observed: bool = False
 
-    def request(self, checkpoint: str = "before") -> None:
+    def request(self, checkpoint: str = "before", reason: str | None = None) -> None:
+        if self.cancelled:
+            return
         self.cancelled = True
         self.checkpoint = checkpoint
+        self.reason = reason
+
+    def acknowledge(self) -> None:
+        self.observed = True
 
 
 class RuntimeCapabilities(BaseModel):
@@ -57,6 +66,15 @@ class ExecutionContext(BaseModel):
     waypoint: Waypoint
     attempt: int = 0
     cancel_token: CancelToken | None = None
+
+    def should_stop(self) -> bool:
+        """Cooperative checkpoint for runtimes that can cancel."""
+
+        token = self.cancel_token
+        if token is None or not token.cancelled:
+            return False
+        token.acknowledge()
+        return True
 
 
 class CompensationResult(BaseModel):

@@ -1,7 +1,8 @@
-# AERIS V0 architecture
+# AERIS architecture
 
-This document is the locked V0 design. It records what was rejected as
-well as what was kept.
+Sections 1–8 are the locked V0 design, including what was rejected.
+Section 9 describes the V1 additions. V1 did not replace any V0 module;
+it extended models and added packages beside them.
 
 ## 1. Analysis of the proposed architecture
 
@@ -94,11 +95,13 @@ aeris/
   control/        ATCController + FlightDirector
   telemetry/      OpenTelemetry helpers
   recorder/       append-only log (memory + sqlite) and replay
-  human/          HITL request model
-  adapters/       AgentRuntime protocol
+  human/          HITL request model, authorization, console view (V1)
+  adapters/       AgentRuntime protocol; LLM chat model + tool-agent runtime (V1)
   simulation/     fake agent + scenarios
-  evaluation/     CONTROL vs AERIS harness
-  api/            FastAPI
+  evaluation/     CONTROL vs AERIS harness; fault matching, pairing (V1)
+  cases/support/  enterprise support case: world, toolbox, routes, evaluator, campaign (V1)
+  experiments/    paired runner, stats, traces, reports (V1)
+  api/            FastAPI + console page
   config.py
 tests/
 examples/
@@ -117,7 +120,9 @@ examples/
 | `human` | Shape of a controller action | Render a UI |
 | `adapters` | `AgentRuntime` protocol | Import LangGraph et al. |
 | `simulation` | Deterministic fake aircraft | Need network |
-| `evaluation` | Compare arms, compute rates | Declare victory |
+| `evaluation` | Compare arms, match faults to hazards, label intervention utility | Declare victory |
+| `cases` | A concrete mission with tools, fixtures, fault proxy, evaluator | Be imported by `core`, `control`, or `radar` |
+| `experiments` | Run paired trials, compute deltas and intervals, write reports | Tune policy on test seeds |
 | `api` | HTTP facade | Own business rules |
 | `telemetry` | OTel spans | Replace radar |
 
@@ -205,8 +210,128 @@ not a statistical sample.
 
 `event_hash = SHA256(canonical_payload + previous_hash)` per flight.
 This detects an edited payload or a deleted middle event if the stored
-hashes are left unchanged. It does not authenticate the writer and does
-not detect truncation of the tail. See THREAT_MODEL.md.
+hashes are left unchanged. On its own it does not authenticate the
+writer or detect truncation of the tail. V1 adds optional checkpoints
+for both; see §9 and THREAT_MODEL.md.
+
+## 9. V1 additions
+
+The loop is unchanged: observe, detect, decide, verify safety,
+intervene, record, measure. What changed is what each step knows.
+
+```
+REAL AGENT (LLMToolAgentRuntime | SimulatedAgent | SimplePythonAgentRuntime)
+      |
+  StepObservation  (+ faults, dependency_ids, tokens, cost)
+      |
+    RADAR ------------- contextual baseline (median/MAD per runtime/route/waypoint/tool)
+      |                  signal provenance
+  HAZARD DETECTOR       (STATIC_THRESHOLD | CONTEXTUAL_THRESHOLD)
+      |
+     ATC  <-- RoutePlanner: explained score incl. failure-domain diversity
+      |                     and shared-failed-dependency penalty
+  SAFETY GATE (side effects, idempotency, compensation)
+      |
+  FlightDirector (per-flight lock, control_version, cancel registry)
+      |
+  FLIGHT RECORDER (+ optional signed checkpoints)
+      |
+  EVALUATION: fault matching, pairing, utility, cost, task evaluator
+```
+
+### Security defaults
+
+`authorize` resolves the role first and rejects a missing or unknown
+role. There is no `role or ADMIN` anywhere. The API schema makes `role`
+required. The domain safety checks (`_reject_unsafe_human_action`) run
+after authorization, so `ADMIN` cannot retry a committed irreversible
+write.
+
+### Concurrency model
+
+The simplest design that holds for one process: an `asyncio.Lock` per
+flight around every mutation (`run`, `resume`, `cancel`), and an integer
+`control_version` that each applied human action increments. A call that
+carries a stale `expected_version` raises `ControlConflict`. A human
+action against a flight that is not `WAITING_HUMAN` fails before taking
+the lock, so it cannot queue behind a running flight. No distributed
+lock.
+
+### Cancellation
+
+`FlightDirector` keeps an active-execution registry (flight → current
+`CancelToken`). `cancel()` records `CANCEL_REQUESTED`, sets the token,
+and the flight loop resolves the outcome at the next boundary: before
+start, between waypoints, inside the waypoint if the runtime observed
+the token, or too late if a write committed or the flight had ended.
+`CANCEL_RESOLVED` carries the outcome. See SAFETY.md for the table.
+
+### Fault instances and matching
+
+`FaultInstance` (fault_id, flight, route, waypoint, type, onset,
+recovery, injected, ground_truth, severity, target, metadata) is emitted
+by whoever injects the fault: the simulator or the support toolbox proxy.
+The director stamps ids, route, waypoint, and onset and records a
+`FAULT_INJECTED` event. Fault instances are evaluation data: the
+detector and ATC never read them, because a controller that sees ground
+truth would be measuring nothing. `Hazard` has an optional
+`source_fault_id` field, but the online path leaves it empty.
+Attribution happens after the flight in `aeris/evaluation/matching.py`
+(`HazardAttribution.source_fault_id`), with explicit rules, and that is
+what the metrics use.
+
+### Contextual radar
+
+`BaselineStore` holds declared or learned `ContextBaseline`s keyed by
+(runtime, route, waypoint, tool). Learning uses median and MAD; the
+detector computes `z = (x − median) / (1.4826 · MAD)` with a MAD floor,
+and flags `HIGH_LATENCY` at `robust_z_threshold`. Tokens use a range with
+a tolerance factor. When no baseline exists for a key, the static
+threshold applies. Baselines can be frozen and fingerprinted.
+
+### Route diversity and history
+
+`RouteDependencies` declares model provider, model family, tool
+provider, data source, region, network, and service ids.
+`failure_domain_diversity(a, b)` returns a score in [0, 1] and a
+per-attribute breakdown with fixed weights. The flight keeps
+`route_history` (`RouteFailureRecord`: route, hazard type, tool,
+provider, dependency ids, count, most recent). The planner score is
+
+```
+score = 1.5·reliability − 0.5·latency_norm − 0.3·cost_norm
+        − 1.0·[route already failed on this flight]
+        − (0.1·hazards + 0.3·critical_hazards) − 0.2·side_effect_risk
+        + 0.6·diversity(current, candidate)
+        − 1.0·[candidate uses a dependency that already failed]
+        − 0.4·[human route]
+```
+
+(`latency_norm = min(latency / 5000 ms, 1)`, `cost_norm = min(cost / 10, 1)`.)
+Every term is in the decision evidence. With
+`avoid_shared_failure_domain`, ATC does not divert to a candidate that
+uses any dependency that already failed on this flight; it records "no
+independent diversion" and falls back to the next safe action. The
+`AERIS_NO_DIVERSITY` ablation zeroes both diversity terms and disables
+that rule.
+
+### Live runtime
+
+`LLMToolAgentRuntime` implements `AgentRuntime` over a `ChatModel` and a
+`ToolExecutor`. `OpenAIChatModel` is the only network client and uses
+`urllib`. `ScriptedSupportModel` implements the same protocol offline.
+Nothing under `core`, `radar`, `policies`, `routing`, or `control`
+imports either. See LIVE_AGENT.md.
+
+### Experiment
+
+`aeris/experiments/support.py` runs, per scenario and seed, one CONTROL
+flight and one flight per AERIS arm with the same fault schedule, seed,
+prompt, temperature, and fixtures, and records a `TrialPair`. Each
+record carries policy version and hash, planner weights hash, route
+config hash, prompt hash, adapter, scenario, fixture and evaluator
+versions, model and reported model version, temperature, seed, and
+baseline fingerprint. See EXPERIMENT_PROTOCOL.md and BENCHMARK.md.
 
 ## Implementation notes
 

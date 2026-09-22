@@ -37,3 +37,7 @@ class RecorderIntegrityError(AerisError):
 
 class UnsupportedRuntimeCapability(AerisError):
     """The runtime cannot perform the requested intervention."""
+
+
+class ControlConflict(AerisError):
+    """A control action raced another one, targets a stale version, or the flight moved on."""

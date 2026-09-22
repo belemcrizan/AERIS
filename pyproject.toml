@@ -33,6 +33,9 @@ dev = [
   "httpx>=0.27.0",
   "ruff>=0.8.0",
 ]
+signing = [
+  "cryptography>=42.0.0",
+]
 
 [project.scripts]
 aeris = "aeris.api.app:main"
@@ -49,6 +52,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+faulthandler_timeout = 120
 filterwarnings = [
   "ignore::DeprecationWarning",
 ]

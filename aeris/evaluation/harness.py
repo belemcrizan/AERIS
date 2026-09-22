@@ -1,7 +1,8 @@
-"""Compare CONTROL vs AERIS on the same seeded scenarios.
+"""Compare CONTROL vs AERIS on the same deterministic simulator scenarios.
 
 The harness does not declare a winner. It reports rates that can falsify
 the hypothesis that AERIS increases recovery under injected failures.
+The live stochastic case study lives in ``aeris.experiments``.
 """
 
 from __future__ import annotations
@@ -11,13 +12,24 @@ from pydantic import BaseModel
 from aeris.control.controller import ATCController
 from aeris.control.director import FlightDirector
 from aeris.core.clock import FakeClock
-from aeris.core.enums import ControlAction, EventType, ExecutionState, InterventionMode
+from aeris.core.enums import (
+    ControlAction,
+    EventType,
+    ExecutionState,
+    InterventionMode,
+    OperatorRole,
+)
+from aeris.evaluation.matching import match_timeline
 from aeris.evaluation.metrics import AggregateMetrics, FlightMetrics, summarize
+from aeris.evaluation.pairing import TrialOutcome, classify_intervention
+from aeris.policies.detector import HazardDetector
 from aeris.policies.thresholds import ThresholdPolicy
 from aeris.radar.engine import RadarEngine
 from aeris.recorder.memory import InMemoryRecorder
 from aeris.routing.planner import RoutePlanner
 from aeris.simulation.scenarios import Scenario, builtin_scenarios
+
+HARNESS_OPERATOR = "experiment-harness"
 
 
 class ExperimentReport(BaseModel):
@@ -28,9 +40,17 @@ class ExperimentReport(BaseModel):
     delta_recovery_rate: float | None
     rows: list[FlightMetrics]
     statistics_note: str
+    policy_hash: str
 
 
 async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdPolicy | None = None) -> FlightMetrics:
+    metrics, _ = await _run_one(scenario, mode, policy)
+    return metrics
+
+
+async def _run_one(
+    scenario: Scenario, mode: InterventionMode, policy: ThresholdPolicy | None = None
+) -> tuple[FlightMetrics, TrialOutcome]:
     policy = policy or ThresholdPolicy(human_on_critical=False, hold_ms=0)
     clock = FakeClock()
     recorder = InMemoryRecorder()
@@ -42,6 +62,7 @@ async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdP
         runtime=runtime,
         planner=planner,
         radar=RadarEngine(clock=clock),
+        detector=HazardDetector(policy=policy, clock=clock),
         controller=controller,
         policy=policy,
         clock=clock,
@@ -55,8 +76,11 @@ async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdP
             flight.flight_id,
             action=ControlAction.ABORT,
             reason="experiment has no live human; abort waiting flights",
+            role=OperatorRole.ADMIN,
+            operator=HARNESS_OPERATOR,
         )
     timeline = await recorder.timeline(flight.flight_id)
+    match = match_timeline(timeline)
     hazards = [event for event in timeline if event.event_type == EventType.HAZARD]
     telemetry = [event for event in timeline if event.event_type == EventType.TELEMETRY]
     decisions = [event for event in timeline if event.event_type == EventType.DECISION]
@@ -65,22 +89,21 @@ async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdP
         latency = float(telemetry[-1].payload.get("metrics", {}).get("execution_time_ms", 0.0))
     success = flight.state == ExecutionState.COMPLETED
     recovered = bool(scenario.injects_failure and success)
-    detected = {event.payload.get("type") for event in hazards}
-    expected = {hazard.value for hazard in scenario.ground_truth_hazards}
-    true_positives = len(expected & detected)
-    false_negatives = len(expected - detected)
-    false_positives = len(detected - expected)
-    true_negatives = 1 if not expected and not detected else 0
+    ground_truth_faults = [fault for fault in match.faults if fault.ground_truth]
+    true_negatives = 1 if not ground_truth_faults and not hazards else 0
     interventions = [
         event for event in decisions if event.payload.get("action") not in {None, ControlAction.CONTINUE.value}
     ]
-    operational = bool(expected) or scenario.injects_failure
+    operational = bool(ground_truth_faults) or scenario.injects_failure
     useful = len(interventions) if operational else 0
     unnecessary = 0 if operational else len(interventions)
     failure_reason = None
     if flight.result is not None and flight.result.failure_reason is not None:
         failure_reason = flight.result.failure_reason.value
-    return FlightMetrics(
+    samples = match.mttd_samples
+    mtti = match.mtti_samples
+    mttr = match.mttr_samples
+    metrics = FlightMetrics(
         scenario_id=scenario.scenario_id,
         mode=mode.value,
         flight_id=flight.flight_id,
@@ -93,13 +116,18 @@ async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdP
         hazard_count=len(hazards),
         injected_failure=scenario.injects_failure,
         recovered=recovered,
-        true_positives=true_positives,
-        false_positives=false_positives,
+        true_positives=match.true_positives,
+        false_positives=match.false_positives,
         true_negatives=true_negatives,
-        false_negatives=false_negatives,
-        mttd_ms=_mttd(timeline),
-        mtti_ms=_mtti(timeline),
-        mttr_ms=_mttr(timeline, success=success),
+        false_negatives=match.false_negatives,
+        duplicate_hazards=match.duplicate_hazards,
+        unmatched_hazards=match.unmatched_hazards,
+        unmatched_faults=match.unmatched_faults,
+        late_detections=match.late_detections,
+        faults_injected=len(match.faults),
+        mttd_ms=sum(samples) / len(samples) if samples else None,
+        mtti_ms=sum(mtti) / len(mtti) if mtti else None,
+        mttr_ms=sum(mttr) / len(mttr) if mttr else None,
         interventions=len(interventions),
         useful_interventions=useful,
         unnecessary_interventions=unnecessary,
@@ -107,54 +135,19 @@ async def run_one(scenario: Scenario, mode: InterventionMode, policy: ThresholdP
         compensations=flight.compensation_count,
         compensation_failures=flight.compensation_failures,
         failure_reason=failure_reason,
+        total_cost=flight.accumulated_cost,
     )
-
-
-def _delta_ms(start, end) -> float:
-    return (end - start).total_seconds() * 1000
-
-
-def _mttd(timeline) -> float | None:
-    """Pair each fault with the next hazard in recorder order.
-
-    Timestamps can coincide across steps, so sequence is the pairing key.
-    Mean time is undefined when a fault is never followed by a hazard.
-    """
-
-    samples: list[float] = []
-    pending = None
-    for event in timeline:
-        if event.event_type == EventType.FAULT_INJECTED:
-            pending = event
-        elif event.event_type == EventType.HAZARD and pending is not None:
-            samples.append(_delta_ms(pending.timestamp, event.timestamp))
-            pending = None
-    if not samples:
-        return None
-    return sum(samples) / len(samples)
-
-
-def _mtti(timeline) -> float | None:
-    hazards = [event for event in timeline if event.event_type == EventType.HAZARD]
-    decisions = [
-        event
-        for event in timeline
-        if event.event_type == EventType.DECISION
-        and event.payload.get("action") not in {None, ControlAction.CONTINUE.value}
-    ]
-    if not hazards or not decisions:
-        return None
-    return _delta_ms(hazards[0].timestamp, decisions[0].timestamp)
-
-
-def _mttr(timeline, *, success: bool) -> float | None:
-    if not success:
-        return None
-    faults = [event for event in timeline if event.event_type == EventType.FAULT_INJECTED]
-    completed = [event for event in timeline if event.event_type == EventType.FLIGHT_COMPLETED]
-    if not faults or not completed:
-        return None
-    return _delta_ms(faults[0].timestamp, completed[-1].timestamp)
+    outcome = TrialOutcome(
+        flight_id=flight.flight_id,
+        arm=mode.value,
+        acceptable=success,
+        completed=success,
+        interventions=len(interventions),
+        duplicate_side_effects=flight.side_effect_incidents,
+        manifested_schedule_ids=match.manifested_schedule_ids,
+        pre_intervention_schedule_ids=match.pre_intervention_schedule_ids,
+    )
+    return metrics, outcome
 
 
 async def run_experiment(
@@ -174,13 +167,16 @@ async def run_experiment(
         "false_low_confidence",
         "healthy_noisy_telemetry",
     ]
+    effective_policy = policy or ThresholdPolicy(human_on_critical=False, hold_ms=0)
     rows: list[FlightMetrics] = []
     for scenario_id in ids:
         for _ in range(repeats):
-            # Rebuild routes per trial so route_ids stay unique per flight.
             fresh = catalog[scenario_id]
-            rows.append(await run_one(fresh, InterventionMode.CONTROL, policy))
-            rows.append(await run_one(fresh, InterventionMode.AERIS, policy))
+            control, control_outcome = await _run_one(fresh, InterventionMode.CONTROL, effective_policy)
+            aeris, aeris_outcome = await _run_one(fresh, InterventionMode.AERIS, effective_policy)
+            label, _ = classify_intervention(control_outcome, aeris_outcome)
+            aeris.intervention_outcome = label
+            rows.extend([control, aeris])
     control = summarize([row for row in rows if row.mode == InterventionMode.CONTROL.value])
     aeris = summarize([row for row in rows if row.mode == InterventionMode.AERIS.value])
     delta = None
@@ -200,7 +196,9 @@ async def run_experiment(
         delta_recovery_rate=delta,
         rows=rows,
         statistics_note=(
-            "V0 fixtures are deterministic. Repeating them does not increase statistical "
-            "power. Seeded stochastic repetitions belong to a later runtime experiment."
+            "Simulator fixtures are deterministic. Repeating them does not increase statistical "
+            "power, so no confidence interval or p-value is reported here. Seeded stochastic "
+            "repetitions belong to the live case study (aeris.experiments)."
         ),
+        policy_hash=effective_policy.policy_hash(),
     )
