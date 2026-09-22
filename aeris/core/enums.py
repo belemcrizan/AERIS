@@ -28,6 +28,7 @@ class HazardType(StrEnum):
     NO_PROGRESS = "NO_PROGRESS"
     ROUTE_FAILURE = "ROUTE_FAILURE"
     BUDGET_RISK = "BUDGET_RISK"
+    SIDE_EFFECT_RISK = "SIDE_EFFECT_RISK"
 
 
 class HazardSeverity(StrEnum):
@@ -37,13 +38,21 @@ class HazardSeverity(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+class HazardScope(StrEnum):
+    ROUTE_LOCAL = "ROUTE_LOCAL"
+    FLIGHT_GLOBAL = "FLIGHT_GLOBAL"
+
+
 class ControlAction(StrEnum):
     CONTINUE = "CONTINUE"
     RETRY = "RETRY"
     HOLD = "HOLD"
     REROUTE = "REROUTE"
+    COMPENSATE = "COMPENSATE"
     ESCALATE_HUMAN = "ESCALATE_HUMAN"
     ABORT = "ABORT"
+    APPROVE_COMPENSATION = "APPROVE_COMPENSATION"
+    DENY_COMPENSATION = "DENY_COMPENSATION"
 
 
 class EventType(StrEnum):
@@ -54,9 +63,13 @@ class EventType(StrEnum):
     WAYPOINT_STARTED = "WAYPOINT_STARTED"
     WAYPOINT_COMPLETED = "WAYPOINT_COMPLETED"
     TELEMETRY = "TELEMETRY"
+    FAULT_INJECTED = "FAULT_INJECTED"
     HAZARD = "HAZARD"
     DECISION = "DECISION"
+    HUMAN_REQUEST = "HUMAN_REQUEST"
     HUMAN_INTERVENTION = "HUMAN_INTERVENTION"
+    SIDE_EFFECT = "SIDE_EFFECT"
+    COMPENSATION = "COMPENSATION"
     FLIGHT_COMPLETED = "FLIGHT_COMPLETED"
 
 
@@ -65,3 +78,48 @@ class InterventionMode(StrEnum):
 
     CONTROL = "CONTROL"
     AERIS = "AERIS"
+
+
+class SideEffectClass(StrEnum):
+    READ_ONLY = "READ_ONLY"
+    IDEMPOTENT_WRITE = "IDEMPOTENT_WRITE"
+    REVERSIBLE_WRITE = "REVERSIBLE_WRITE"
+    IRREVERSIBLE_WRITE = "IRREVERSIBLE_WRITE"
+
+
+class SignalProvenance(StrEnum):
+    """How much AERIS should trust a telemetry field."""
+
+    MEASURED = "MEASURED"
+    RUNTIME_REPORTED = "RUNTIME_REPORTED"
+    TOOL_REPORTED = "TOOL_REPORTED"
+    DERIVED = "DERIVED"
+
+
+class FailureReason(StrEnum):
+    TOOL_FAILURE = "tool_failure"
+    TIMEOUT = "timeout"
+    BUDGET_EXHAUSTION = "budget_exhaustion"
+    ROUTE_EXHAUSTION = "route_exhaustion"
+    UNSAFE_RETRY_BLOCKED = "unsafe_retry_blocked"
+    UNSAFE_REROUTE_BLOCKED = "unsafe_reroute_blocked"
+    COMPENSATION_FAILURE = "compensation_failure"
+    HUMAN_ABORT = "human_abort"
+    POLICY_ABORT = "policy_abort"
+    INVALID_RUNTIME_OUTPUT = "invalid_runtime_output"
+    CANCELLED = "cancelled"
+
+
+class OperatorRole(StrEnum):
+    OBSERVER = "OBSERVER"
+    CONTROLLER = "CONTROLLER"
+    ADMIN = "ADMIN"
+
+
+class RuntimeCapability(StrEnum):
+    CAN_CANCEL = "CAN_CANCEL"
+    CAN_RETRY = "CAN_RETRY"
+    CAN_COMPENSATE = "CAN_COMPENSATE"
+    SUPPORTS_IDEMPOTENCY = "SUPPORTS_IDEMPOTENCY"
+    SUPPORTS_PROGRESS = "SUPPORTS_PROGRESS"
+    SUPPORTS_STREAMING = "SUPPORTS_STREAMING"

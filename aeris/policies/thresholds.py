@@ -18,5 +18,8 @@ class ThresholdPolicy(BaseModel):
     max_retries: int = 2
     max_route_changes: int = 3
     max_holds: int = 2
+    max_execution_time_ms: float = 120_000.0
+    max_cost: float = 50.0
     human_on_critical: bool = True
+    escalate_irreversible: bool = True
     hold_ms: int = 50

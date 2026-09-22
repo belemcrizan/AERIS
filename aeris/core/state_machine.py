@@ -6,10 +6,9 @@ returned so the recorder can persist it.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from aeris.core.clock import Clock, SystemClock
 from aeris.core.enums import ExecutionState
+from aeris.core.errors import AerisError
 from aeris.core.models import Flight, StateTransition
 
 TERMINAL_STATES = {
@@ -80,7 +79,7 @@ ALLOWED: dict[ExecutionState, frozenset[ExecutionState]] = {
 }
 
 
-class InvalidTransition(Exception):
+class InvalidTransition(AerisError):
     def __init__(self, from_state: ExecutionState, to_state: ExecutionState) -> None:
         self.from_state = from_state
         self.to_state = to_state

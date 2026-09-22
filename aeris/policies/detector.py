@@ -10,7 +10,15 @@ from aeris.core.clock import Clock, SystemClock
 from aeris.core.enums import ControlAction, HazardSeverity, HazardType
 from aeris.core.ids import new_id
 from aeris.core.models import Flight, Hazard, TelemetryEvent
+from aeris.policies.catalog import spec_for
 from aeris.policies.thresholds import ThresholdPolicy
+
+_SEVERITY_LADDER = (
+    HazardSeverity.INFO,
+    HazardSeverity.CAUTION,
+    HazardSeverity.WARNING,
+    HazardSeverity.CRITICAL,
+)
 
 
 class HazardDetector:
@@ -21,6 +29,7 @@ class HazardDetector:
     ) -> None:
         self.policy = policy or ThresholdPolicy()
         self._clock = clock or SystemClock()
+        self._occurrences: dict[tuple[str, HazardType], int] = {}
 
     def detect(self, flight: Flight, telemetry: TelemetryEvent) -> list[Hazard]:
         metrics = telemetry.metrics
@@ -150,7 +159,7 @@ class HazardDetector:
                         HazardSeverity.CRITICAL,
                         ControlAction.ABORT,
                         now,
-                        {"token_usage": metrics.token_usage},
+                        {"token_usage": metrics.token_usage, "execution_time_ms": metrics.execution_time_ms},
                     )
                 )
             elif metrics.token_usage >= int(self.policy.budget_tokens * self.policy.budget_warning_ratio):
@@ -161,11 +170,36 @@ class HazardDetector:
                         HazardSeverity.WARNING,
                         ControlAction.HOLD,
                         now,
-                        {"token_usage": metrics.token_usage},
+                        {"token_usage": metrics.token_usage, "execution_time_ms": metrics.execution_time_ms},
                     )
                 )
+        if metrics.execution_time_ms >= self.policy.max_execution_time_ms and not any(
+            hazard.type is HazardType.BUDGET_RISK and hazard.severity is HazardSeverity.CRITICAL
+            for hazard in hazards
+        ):
+            hazards.append(
+                self._hazard(
+                    flight,
+                    HazardType.BUDGET_RISK,
+                    HazardSeverity.CRITICAL,
+                    ControlAction.ABORT,
+                    now,
+                    {"execution_time_ms": metrics.execution_time_ms},
+                )
+            )
 
         return hazards
+
+    def reset_route_local(self, flight_id: str) -> None:
+        """Drop route-local occurrence counts after a diversion."""
+
+        stale = [
+            key
+            for key in self._occurrences
+            if key[0] == flight_id and spec_for(key[1]).scope.value == "ROUTE_LOCAL"
+        ]
+        for key in stale:
+            del self._occurrences[key]
 
     def _hazard(
         self,
@@ -176,6 +210,18 @@ class HazardDetector:
         timestamp,
         evidence: dict,
     ) -> Hazard:
+        spec = spec_for(hazard_type)
+        key = (flight.flight_id, hazard_type)
+        occurrence = self._occurrences.get(key, 0) + 1
+        self._occurrences[key] = occurrence
+        severity = self._escalate(severity, occurrence, spec.escalates_on_repeat)
+        evidence = {
+            **evidence,
+            "occurrence": occurrence,
+            "scope": spec.scope.value,
+            "signal_provenance": spec.provenance.value,
+            "detector_confidence": 1.0,
+        }
         return Hazard(
             hazard_id=new_id("haz"),
             flight_id=flight.flight_id,
@@ -185,4 +231,19 @@ class HazardDetector:
             evidence=evidence,
             confidence=1.0,
             recommended_action=action,
+            scope=spec.scope,
+            auto_clear=spec.auto_clear,
+            occurrence=occurrence,
         )
+
+    @staticmethod
+    def _escalate(
+        severity: HazardSeverity,
+        occurrence: int,
+        enabled: bool,
+    ) -> HazardSeverity:
+        if not enabled or occurrence < 2:
+            return severity
+        index = _SEVERITY_LADDER.index(severity)
+        bumped = min(index + (occurrence - 1), len(_SEVERITY_LADDER) - 1)
+        return _SEVERITY_LADDER[bumped]
