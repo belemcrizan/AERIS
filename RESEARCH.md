@@ -6,6 +6,12 @@ Can an external, framework-agnostic control layer observe an agent
 during execution, detect degradation, and intervene (reroute, retry,
 hold, escalate, abort) before terminal failure?
 
+V1 sharpens it: does an external closed-loop runtime control layer
+improve the reliability of a real stochastic agent under controlled
+runtime degradation, **without** excessive unnecessary intervention,
+cost, latency, or side-effect risk? The V1 hypotheses, thresholds, and
+sample sizes are fixed in [EXPERIMENT_PROTOCOL.md](EXPERIMENT_PROTOCOL.md).
+
 ## Hypothesis (V0)
 
 AERIS increases **recovery rate** under injected runtime failures
@@ -92,8 +98,52 @@ on the CONTROL arm.
 ## Statistics
 
 These fixtures are deterministic. Repeating them does not create
-independent samples, so V0 does not report p-values. A later stochastic
-runtime needs seeded repetitions designed before the run.
+independent samples, so V0 does not report p-values.
+
+V1 rules, enforced in `aeris/experiments/stats.py` and the report:
+
+- A deterministic run (the scripted model) never gets an interval, at
+  any N. Its counts are exact for the fixture.
+- A stochastic run gets a 95% percentile bootstrap interval over paired
+  differences only with at least 30 pairs.
+- No parametric test is applied by default. The report never says
+  "significant"; it prints the interval and leaves the reading to the
+  protocol's pre-registered rule.
+- Engineering significance (is the delta worth the latency and cost?)
+  is reported separately, against thresholds fixed in the protocol.
+
+## V1 measurement changes
+
+V0 matched faults and hazards by type within a flight. That rewards any
+hazard that happens to come next. V1 matches fault *instances* to hazard
+*events* by type compatibility, route, waypoint, and a time window, and
+computes event-level precision, recall, duplicates, late detections,
+unmatched hazards, and unmatched faults. MTTD, MTTI, and MTTR use only
+matched pairs.
+
+V0's `intervention_precision` asked whether a fault was present when
+AERIS intervened. Presence of a fault does not make an intervention
+useful. V1 labels intervention utility from the paired outcome
+(BENEFICIAL / NEUTRAL / HARMFUL / UNRESOLVED). `intervention_precision`
+is kept in the V0 harness with its original meaning.
+
+Task success is scored by an external deterministic evaluator against
+ground truth and the sandbox ledger, not by terminal state and not by a
+model.
+
+## V1 threats to validity
+
+- The only results so far come from a scripted model whose error
+  behaviour we wrote. It can encode the very weakness AERIS fixes.
+- CONTROL owns its retries within a 3-turn phase budget. That budget is
+  a design choice and decides some outcomes (see `status_rate_limit`).
+- AERIS and CONTROL differ in two ways at once: a supervisor exists, and
+  tool errors surface to it instead of to the model. A stronger baseline
+  arm is needed to separate those.
+- Tool latency is declared, not measured, so latency results for tools
+  are properties of the fixture.
+- Contextual token baselines, calibrated on clean flights, produce many
+  false-positive `BUDGET_RISK` cautions once any retry happens.
 
 ## Failure provenance
 
